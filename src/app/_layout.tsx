@@ -1,3 +1,5 @@
+// Tabs
+
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { useColorScheme } from "react-native";
@@ -18,3 +20,15 @@ export default function RootLayout() {
     </ThemeProvider>
   );
 }
+
+// DB
+
+import { initDatabase } from "@/db/schema";
+import { seedDatabase } from "@/db/seed";
+import { useEffect } from "react";
+
+// inside RootLayout, before the return:
+useEffect(() => {
+  initDatabase();
+  seedDatabase("Pranay"); // your name, used for the 'self' person row
+}, []);
