@@ -12,13 +12,13 @@ import { ThemedView } from "@/components/themed-view";
 import { Spacing } from "@/constants/theme";
 import { CategoryRow } from "@/db/categories";
 import { insertExpense } from "@/db/expenses";
-import { useAddExpenseIntent } from "@/hooks/useAddExpenseIntent";
+import { useAddExpenseIntentContext } from "@/hooks/add-expense-intent-provider";
 
 const STEP_NAMES = ["Amount", "Category", "Split", "Label", "Preview"] as const;
 const LAST_STEP = STEP_NAMES.length - 1;
 
 export default function AddScreen() {
-  const { intent, clear } = useAddExpenseIntent();
+  const { intent, clear } = useAddExpenseIntentContext();
   const router = useRouter();
   const [currentStep, setCurrentStep] = useState(0);
   const [amount, setAmount] = useState("");
@@ -37,9 +37,10 @@ export default function AddScreen() {
     if (smsPrefillAmount != null) setAmount(smsPrefillAmount);
   }, [smsPrefillAmount]);
 
-  // No intent yet (e.g. modal opened before openManual/deep link landed) — wait.
-  if (!intent) return null;
-
+  // No intent = opened directly (e.g. the raw add:// route) -> behave exactly
+  // like a manual open: empty amount, nothing pre-filled.
+  const smsIntent = intent?.source === "sms" ? intent : null;
+  const isManual = smsIntent == null;
   const isAmountStep = currentStep === 0;
 
   const goNext = () => {
@@ -50,7 +51,6 @@ export default function AddScreen() {
     setCurrentStep((step) => Math.max(step - 1, 0));
   };
 
-  const isSms = intent.source === "sms";
   const participants = split?.participants ?? [];
   const canConfirm =
     totalAmount > 0 && category != null && participants.length > 0;
@@ -62,10 +62,10 @@ export default function AddScreen() {
       totalAmount,
       categoryId: category.id,
       label: trimmedLabel,
-      merchant: isSms ? intent.prefill.merchant : null,
-      source: isSms ? "sms" : "manual",
-      bankSource: isSms ? intent.bankSource : null,
-      rawSmsText: isSms ? intent.rawText : null,
+      merchant: smsIntent ? smsIntent.prefill.merchant : null,
+      source: smsIntent ? "sms" : "manual",
+      bankSource: smsIntent ? smsIntent.bankSource : null,
+      rawSmsText: smsIntent ? smsIntent.rawText : null,
       occurredAt: new Date().toISOString(),
       participants,
     });
@@ -89,7 +89,7 @@ export default function AddScreen() {
           {currentStep + 1}/{STEP_NAMES.length} {STEP_NAMES[currentStep]}
         </ThemedText>
         <Pressable
-          onPress={clear}
+          onPress={exitToHome}
           hitSlop={12}
           accessibilityLabel="Close add expense"
         >
@@ -102,7 +102,7 @@ export default function AddScreen() {
           <AmountSlide
             value={amount}
             onChangeAmount={setAmount}
-            autoFocus={intent.source === "manual"}
+            autoFocus={isManual}
           />
         ) : currentStep === 1 ? (
           <CategorySlide
@@ -118,8 +118,8 @@ export default function AddScreen() {
             totalAmount={totalAmount}
             categoryName={category?.name ?? null}
             label={label}
-            merchant={isSms ? intent.prefill.merchant : null}
-            rawSmsText={isSms ? intent.rawText : null}
+            merchant={smsIntent ? smsIntent.prefill.merchant : null}
+            rawSmsText={smsIntent ? smsIntent.rawText : null}
             participants={participants}
             canConfirm={canConfirm}
             onConfirm={confirmAndSave}
