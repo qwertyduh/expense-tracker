@@ -1,6 +1,6 @@
 import { useRouter } from "expo-router";
 import { useEffect, useState } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { KeyboardAvoidingView, Platform, Pressable, StyleSheet, View } from "react-native";
 
 import { AmountSlide } from "@/components/add-flow/amount-slide";
 import { CategorySlide } from "@/components/add-flow/category-slide";
@@ -97,7 +97,10 @@ export default function AddScreen() {
         </Pressable>
       </View>
 
-      <View style={styles.step}>
+      <KeyboardAvoidingView
+        style={styles.step}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
         {isAmountStep ? (
           <AmountSlide
             value={amount}
@@ -126,7 +129,7 @@ export default function AddScreen() {
             onDone={exitToHome}
           />
         )}
-      </View>
+      </KeyboardAvoidingView>
 
       <View style={styles.footer}>
         <Pressable onPress={goBack} disabled={currentStep === 0}>
