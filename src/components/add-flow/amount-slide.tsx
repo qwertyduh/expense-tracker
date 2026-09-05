@@ -1,4 +1,4 @@
-import { StyleSheet, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { Fonts, Spacing, ThemeColor } from '@/constants/theme';
@@ -27,31 +27,45 @@ export function AmountSlide({ value, onChangeAmount, autoFocus }: AmountSlidePro
   const placeholderColor: ThemeColor = 'textSecondary';
 
   return (
-    <View style={styles.body}>
-      <ThemedText type="subtitle">How much?</ThemedText>
-      <ThemedText type="small" themeColor={placeholderColor}>
-        Amount before any split
-      </ThemedText>
+    <KeyboardAvoidingView
+      style={styles.wrapper}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
+      <View style={styles.body}>
+        <ThemedText type="subtitle">How much?</ThemedText>
+        <ThemedText type="small" themeColor={placeholderColor}>
+          Amount before any split
+        </ThemedText>
 
-      <View style={styles.inputRow}>
-        <ThemedText type="title">₹</ThemedText>
-        <TextInput
-          style={[styles.input, { color: theme.text }]}
-          value={value}
-          onChangeText={(raw) => onChangeAmount(sanitizeAmount(raw))}
-          placeholder="0"
-          placeholderTextColor={theme.textSecondary}
-          selectionColor={theme.backgroundSelected}
-          keyboardType="decimal-pad"
-          autoFocus={autoFocus}
-          accessibilityLabel="Amount"
-        />
+        <View style={styles.inputRow}>
+          <ThemedText type="title">₹</ThemedText>
+          <TextInput
+            style={[styles.input, { color: theme.text }]}
+            value={value}
+            onChangeText={(raw) => onChangeAmount(sanitizeAmount(raw))}
+            placeholder="0"
+            placeholderTextColor={theme.textSecondary}
+            selectionColor={theme.backgroundSelected}
+            keyboardType="decimal-pad"
+            // iOS-only native Done toolbar, shown above keypads with no return key.
+            // Prefer this over a custom InputAccessoryView: RN attaches it at focus
+            // time, so it docks reliably on warm starts (unlike a nativeID accessory,
+            // whose one-shot window scan can miss when the modal is re-presented).
+            inputAccessoryViewButtonLabel="Done"
+            autoFocus={autoFocus}
+            accessibilityLabel="Amount"
+          />
+        </View>
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
+  wrapper: {
+    flex: 1,
+    justifyContent: 'center',
+  },
   body: {
     alignItems: 'center',
     gap: Spacing.two,

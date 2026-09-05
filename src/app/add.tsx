@@ -129,16 +129,13 @@ export default function AddScreen() {
       </View>
 
       <View style={styles.footer}>
-        <Pressable onPress={goBack} disabled={currentStep === 0}>
-          <ThemedText
-            type="link"
-            themeColor={currentStep === 0 ? "textSecondary" : "text"}
-          >
-            Back
-          </ThemedText>
-        </Pressable>
+        {currentStep > 0 && (
+          <Pressable onPress={goBack}>
+            <ThemedText type="link">Back</ThemedText>
+          </Pressable>
+        )}
         {currentStep < LAST_STEP && (
-          <Pressable onPress={goNext}>
+          <Pressable onPress={goNext} style={styles.next}>
             <ThemedText type="linkPrimary">Next</ThemedText>
           </Pressable>
         )}
@@ -168,5 +165,8 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     paddingVertical: Spacing.four,
+  },
+  next: {
+    marginLeft: "auto",
   },
 });

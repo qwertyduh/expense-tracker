@@ -1,4 +1,4 @@
-import { StyleSheet, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
@@ -14,30 +14,39 @@ export function LabelSlide({ value, onChangeLabel }: LabelSlideProps) {
   const theme = useTheme();
 
   return (
-    <View style={styles.body}>
-      <ThemedText type="subtitle">Give it a label</ThemedText>
-      <ThemedText type="small" themeColor="textSecondary">
-        Optional — e.g. "Zomato - team lunch"
-      </ThemedText>
+    <KeyboardAvoidingView
+      style={styles.wrapper}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
+      <View style={styles.body}>
+        <ThemedText type="subtitle">Give it a label</ThemedText>
+        <ThemedText type="small" themeColor="textSecondary">
+          Optional — e.g. "Zomato - team lunch"
+        </ThemedText>
 
-      <TextInput
-        style={[
-          styles.input,
-          { color: theme.text, backgroundColor: theme.backgroundElement },
-        ]}
-        value={value}
-        onChangeText={onChangeLabel}
-        placeholder="Label"
-        placeholderTextColor={theme.textSecondary}
-        autoCapitalize="sentences"
-        autoFocus
-        accessibilityLabel="Label"
-      />
-    </View>
+        <TextInput
+          style={[
+            styles.input,
+            { color: theme.text, backgroundColor: theme.backgroundElement },
+          ]}
+          value={value}
+          onChangeText={onChangeLabel}
+          placeholder="Label"
+          placeholderTextColor={theme.textSecondary}
+          autoCapitalize="sentences"
+          autoFocus
+          accessibilityLabel="Label"
+        />
+      </View>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
+  wrapper: {
+    flex: 1,
+    justifyContent: 'center',
+  },
   body: {
     alignItems: 'center',
     gap: Spacing.two,

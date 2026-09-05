@@ -1,60 +1,151 @@
-<<<<<<< HEAD
-# Welcome to your Expo app 👋
+# UPI Expense Tracker
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+A personal, local-first mobile expense tracker built with React Native +
+Expo. Its core feature is capturing UPI payment SMS automatically — despite
+iOS blocking apps from reading SMS directly — by routing the message through
+an Apple Shortcuts automation and a custom deep link.
 
-## Get started
+Currently iOS-only, single-user, fully local (no backend, no account, no
+internet dependency once installed).
 
-1. Install dependencies
+---
 
-   ```bash
-   npm install
-   ```
+## How it works, in one paragraph
 
-2. Start the app
+A UPI/card debit SMS arrives from your bank → an Apple Shortcuts automation
+captures the raw text (no parsing done in the Shortcut) → it opens
+`expensetracker://add?bank=hdfc&data=<url-encoded raw text>` → the app
+launches or foregrounds, parses the message with a bank-specific regex
+parser, and opens the Add Expense flow pre-filled with the amount/merchant/
+date. You can also add expenses manually via the same flow, with nothing
+pre-filled.
 
-   ```bash
-   npx expo start
-   ```
+---
 
-In the output, you'll find options to open the app in a
+## Features
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+- Manual + SMS-triggered expense entry through one unified 5-slide flow
+  (Amount → Category → Split → Label → Confirm)
+- Category tracking: a stable manual ranking (`sort_order`) plus a dynamic
+  "recently used" quick-pick (`last_used_at`)
+- Expense splitting — tracks _your share_ only; full settlement between
+  people is a planned future feature, not built yet
+- Fully local SQLite storage — nothing leaves your device
+- Activity log of every create/edit/delete action, independent of whether
+  the original expense still exists
+- Home Dashboard: recent transactions + a toggleable pie chart
+  (_in progress_)
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+## Not yet built
 
-## Get a fresh project
+- Category Management screen
+- Transactions tab (full list)
+- History tab (UI for the activity log)
+- Transaction Detail (view/edit/delete)
+- The actual on-device Apple Shortcut configuration
+- Android support (see [Android Track](#android-track) below)
 
-When you're ready, run:
+## Planned, future versions
 
-```bash
-npm run reset-project
+1. **Next:** Dynamic Island / Live Activity as an alternate entry trigger
+   (requires native Swift, a real complexity jump beyond Expo's managed
+   workflow)
+2. **After that:** Supabase-backed multi-user sync, real "who owes who"
+   settlement, budget alerts, weekly digest, yearly recap
+
+---
+
+## Tech stack
+
+| Tool                                          | Purpose                                                                                       |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Expo (managed workflow) + React Native        | Core app framework                                                                            |
+| Expo Router                                   | File-based navigation, also handles incoming deep links                                       |
+| `expo-sqlite`                                 | Local database                                                                                |
+| `expo-crypto`                                 | UUID generation for primary keys                                                              |
+| `react-native-chart-kit` + `react-native-svg` | Pie chart                                                                                     |
+| TypeScript                                    | Throughout                                                                                    |
+| Xcode (local builds)                          | iOS compiling/signing — no paid Apple Developer account required for personal device installs |
+
+---
+
+## Project structure
+
+```
+app/
+├── _layout.tsx          → root Stack (wraps tabs + add.tsx as a modal)
+├── (tabs)/
+│   ├── _layout.tsx        → tab bar (NativeTabs)
+│   ├── index.tsx           → Home Dashboard
+│   └── explore.tsx         → unused template screen
+└── add.tsx               → Add Expense slide flow
+
+db/
+├── schema.ts              → CREATE TABLE statements + initDatabase()
+├── seed.ts                 → default categories + self person
+├── categories.ts            → quick-pick + full-list queries
+├── people.ts                 → self lookup, find-or-create for splits
+└── expenses.ts                 → insertExpense() (transactional), queries
+
+parsers/
+├── types.ts                → ParsedTransaction interface
+├── hdfc.ts                  → HDFC UPI + Card SMS regex parsing
+└── index.ts                  → parseSms(bank, text) dispatcher
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Full architecture, schema, and decision rationale:
+see `docs/expense-tracker-project-documentation.md`.
 
-### Other setup steps
+---
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+## Getting started
 
-## Learn more
+```bash
+git clone <repo-url>
+cd expense-tracker
+npm install
+npx expo install expo-sqlite expo-crypto expo-linking react-native-chart-kit react-native-svg
+npx expo prebuild --platform ios
+npx expo run:ios --device --configuration Release
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+Requires a free Apple ID signed into Xcode (Xcode → Settings → Accounts →
+add Apple ID) to create a Personal Team for local device signing —
+no paid Apple Developer Program needed.
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+## Day-to-day development
 
-## Join the community
+```bash
+npx expo run:ios --device --configuration Release
+```
 
-Join our community of developers creating universal apps.
+This installs a release version of the app to your device
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
-=======
-# expense-tracker
->>>>>>> 7ed699f66679bd77d506d2f9ba01d73cc330fcfb
+## Producing a standalone (no-server-needed) build
+
+you would need to run the day to day deployment after getting a new signing key from Xcode every 7 days (thanks apple)
+
+## Database schema changes
+
+`db/schema.ts` currently uses `CREATE TABLE IF NOT EXISTS`, which is safe for
+adding new tables but does **not** apply changes to existing tables (e.g.
+adding a column). Any schema change beyond a new table needs a proper
+migration step (tracked via SQLite's `PRAGMA user_version`) before shipping,
+to avoid silently skipping the change on devices that already have data.
+
+---
+
+## Android Track
+
+Android doesn't have iOS's SMS-reading restriction, so the Shortcuts
+workaround isn't needed there — a native SMS listener can trigger the exact
+same internal deep link (`expensetracker://add?bank=hdfc&data=...`) that
+iOS's Shortcut builds, reusing the entire parsing/routing/DB pipeline
+unchanged. See `android-track-tasks.md` for the full task breakdown.
+
+**Contribution convention:** Android-specific work stays isolated to a new
+`android-sms/` module; `parsers/`, `db/`, and `app/add.tsx` are shared and
+should only change with both platforms' agreement, since a change there
+affects both.
+
+---

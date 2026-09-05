@@ -10,7 +10,6 @@ import { WebBadge } from "@/components/web-badge";
 import { BottomTabInset, MaxContentWidth, Spacing } from "@/constants/theme";
 
 import { Link } from "expo-router";
-import { Button } from "react-native";
 
 function getDevMenuHint() {
   if (Platform.OS === "web") {
@@ -65,7 +64,6 @@ export default function HomeScreen() {
         {Platform.OS === "web" && <WebBadge />}
 
         <ThemedView>
-          <Button title="Click me" onPress={() => navigateToAddScreen()} />
           <Link href="/add">
             <ThemedText>Go to Add</ThemedText>
           </Link>
