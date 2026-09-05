@@ -29,6 +29,7 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
+      "./plugins/with-payment-accessibility-service",
       "expo-router",
       [
         "expo-splash-screen",

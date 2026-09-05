@@ -1,4 +1,5 @@
 import * as Device from "expo-device";
+import * as Linking from "expo-linking";
 import { Platform, StyleSheet } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -35,6 +36,12 @@ const navigateToAddScreen = () => {
   return;
 };
 
+const openAccessibilitySettings = () => {
+  if (Platform.OS === "android") {
+    Linking.sendIntent("android.settings.ACCESSIBILITY_SETTINGS");
+  }
+};
+
 export default function HomeScreen() {
   return (
     <ThemedView style={styles.container}>
@@ -65,10 +72,15 @@ export default function HomeScreen() {
         {Platform.OS === "web" && <WebBadge />}
 
         <ThemedView>
-          <Button title="Click me" onPress={() => navigateToAddScreen()} />
           <Link href="/add">
             <ThemedText>Go to Add</ThemedText>
           </Link>
+          {Platform.OS === "android" && (
+            <Button
+              title="Enable payment detection"
+              onPress={openAccessibilitySettings}
+            />
+          )}
         </ThemedView>
       </SafeAreaView>
     </ThemedView>

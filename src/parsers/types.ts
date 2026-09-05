@@ -6,4 +6,6 @@ export interface ParsedTransaction {
   parseSucceeded: boolean;
 }
 
-export type BankSource = 'hdfc'; // add more bank identifiers here as they're supported
+// 'hdfc' is a bank SMS source; 'gpay' is a UPI-app screen source (captured by
+// the Accessibility Service). Both funnel into the same parsed-transaction shape.
+export type BankSource = 'hdfc' | 'gpay';
