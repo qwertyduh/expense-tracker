@@ -4,7 +4,7 @@ import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { SplitParticipant } from '@/components/add-flow/split-slide';
+import { SplitSummary } from '@/components/add-flow/split-slide';
 
 export type PreviewSlideProps = {
   totalAmount: number;
@@ -12,7 +12,8 @@ export type PreviewSlideProps = {
   label: string;
   merchant: string | null;
   rawSmsText: string | null;
-  participants: SplitParticipant[];
+  /** null = split step never produced a value yet (can't have reached preview). */
+  split: SplitSummary | null;
   canConfirm: boolean;
   onConfirm: () => void;
   /** clear() the intent + navigate back to Home. */
@@ -20,6 +21,10 @@ export type PreviewSlideProps = {
 };
 
 const SAVED_DELAY_MS = 900;
+
+function fmt(n: number): string {
+  return `₹${(Math.round(n * 100) / 100).toFixed(2)}`;
+}
 
 function Row({ k, v, emphasize }: { k: string; v: string; emphasize?: boolean }) {
   return (
@@ -62,7 +67,7 @@ export function PreviewSlide(props: PreviewSlideProps) {
     );
   }
 
-  const { totalAmount, categoryName, label, merchant, rawSmsText, participants, canConfirm } = props;
+  const { totalAmount, categoryName, label, merchant, rawSmsText, split, canConfirm } = props;
 
   return (
     <View style={styles.body}>
@@ -70,20 +75,24 @@ export function PreviewSlide(props: PreviewSlideProps) {
         <ThemedText type="subtitle">Preview</ThemedText>
 
         <View style={[styles.card, { backgroundColor: theme.backgroundElement }]}>
-          <Row k="Amount" v={`₹${totalAmount.toFixed(2)}`} emphasize />
+          <Row k="Bill" v={fmt(totalAmount)} emphasize />
+          {split?.isSplit && <Row k="Your share" v={fmt(split.selfShare)} />}
           <Row k="Category" v={categoryName ?? 'Not chosen'} />
           <Row k="Label" v={label.trim() ? label.trim() : '—'} />
           {merchant != null && <Row k="Merchant" v={merchant} />}
         </View>
 
-        <ThemedText type="smallBold" style={styles.sectionTitle}>
-          Split {participants.length > 1 ? `(${participants.length} people)` : ''}
-        </ThemedText>
-        <View style={[styles.card, { backgroundColor: theme.backgroundElement }]}>
-          {participants.map((p) => (
-            <Row key={p.personId} k={p.displayName} v={`₹${p.shareAmount.toFixed(2)}`} />
-          ))}
-        </View>
+        {split?.isSplit && (
+          <>
+            <ThemedText type="smallBold" style={styles.sectionTitle}>
+              Split ({split.participantCount} people)
+            </ThemedText>
+            <View style={[styles.card, { backgroundColor: theme.backgroundElement }]}>
+              <Row k="You" v={fmt(split.selfShare)} emphasize />
+              <Row k={`Others (${split.participantCount - 1})`} v={fmt(totalAmount - split.selfShare)} />
+            </View>
+          </>
+        )}
 
         {rawSmsText != null && (
           <>

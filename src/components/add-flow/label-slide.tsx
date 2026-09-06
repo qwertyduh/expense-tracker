@@ -1,4 +1,4 @@
-import { KeyboardAvoidingView, Platform, StyleSheet, TextInput, View } from 'react-native';
+import { StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
@@ -14,10 +14,7 @@ export function LabelSlide({ value, onChangeLabel }: LabelSlideProps) {
   const theme = useTheme();
 
   return (
-    <KeyboardAvoidingView
-      style={styles.wrapper}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
+    <View style={styles.wrapper}>
       <View style={styles.body}>
         <ThemedText type="subtitle">Give it a label</ThemedText>
         <ThemedText type="small" themeColor="textSecondary">
@@ -38,7 +35,7 @@ export function LabelSlide({ value, onChangeLabel }: LabelSlideProps) {
           accessibilityLabel="Label"
         />
       </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 

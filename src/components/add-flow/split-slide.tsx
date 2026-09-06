@@ -1,24 +1,26 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
-import { Spacing } from '@/constants/theme';
-import { addPerson, listPeople, PersonRow } from '@/db/people';
+import { Fonts, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 
-// Flattened participant list reported upward so Preview can assemble the
-// expense + expense_participants rows. shareAmount is the share stored in DB.
-export type SplitParticipant = {
-  /** 'self' for you, else the people.id. */
-  personId: string;
-  displayName: string;
-  shareAmount: number;
-};
-
+/**
+ * Reported upward so Preview and the DB write know how to record the expense.
+ *
+ * Semantics: totalAmount is the full bill; selfShare is YOUR portion of it
+ * (what the expense row stores as `amount`). Everyone else simply covers the
+ * remainder — this is a local single-user app, so other people are a count,
+ * not named participants.
+ */
 export type SplitSummary = {
+  /** True when your share is less than the full bill (someone else covers the rest). */
   isSplit: boolean;
   totalAmount: number;
-  participants: SplitParticipant[];
+  /** Your portion of the bill — clamped to [0, totalAmount]. */
+  selfShare: number;
+  /** How many people the bill is shared across (1 = you alone). */
+  participantCount: number;
 };
 
 export type SplitSlideProps = {
@@ -26,8 +28,7 @@ export type SplitSlideProps = {
   onChange: (summary: SplitSummary) => void;
 };
 
-// Stable per-row key — 'self' for you, people.id for everyone else.
-const SELF_KEY = 'self';
+const QUICK_COUNTS = [1, 2, 3, 4, 5, 6, 7, 8];
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -42,202 +43,103 @@ function sanitizeDecimal(raw: string): string {
   return out;
 }
 
-const QUICK_COUNTS = [1, 2, 3, 4, 5, 6, 7, 8];
-
 export function SplitSlide({ totalAmount, onChange }: SplitSlideProps) {
   const theme = useTheme();
-  const [people, setPeople] = useState<PersonRow[]>([]);
-  // Rows: index 0 is always self, rest are chosen others, in pick order.
-  const [rows, setRows] = useState<{ key: string; name: string }[]>([
-    { key: SELF_KEY, name: 'You' },
-  ]);
-  // Per-key share overrides. Empty means "auto even share".
-  const [overrides, setOverrides] = useState<Record<string, string>>({});
-  const [newName, setNewName] = useState('');
+  const [count, setCount] = useState(1);
+  // Raw "your share" text so "12." mid-edit stays representable. For count 1
+  // it is always the full bill and the input is hidden.
+  const [share, setShare] = useState('');
 
-  useEffect(() => {
-    setPeople(listPeople());
-  }, []);
-
-  // Report the default (no split, all to self) whenever the total changes.
-  useEffect(() => {
-    report([{ key: SELF_KEY, name: 'You' }], {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [totalAmount]);
-
-  const others = people.filter((p) => !rows.some((r) => r.key === p.id));
-
-  const isSplit = rows.length > 1;
-
-  const report = (nextRows: { key: string; name: string }[], nextOverrides: Record<string, string>) => {
-    const even = totalAmount / nextRows.length;
+  const report = (nextCount: number, rawShare: string) => {
+    const selfShare = round2(
+      Math.max(0, Math.min(parseFloat(rawShare) || 0, totalAmount))
+    );
     onChange({
-      isSplit: nextRows.length > 1,
+      isSplit: nextCount > 1 && selfShare < round2(totalAmount),
       totalAmount,
-      participants: nextRows.map((row) => ({
-        personId: row.key,
-        displayName: row.name,
-        shareAmount: nextOverrides[row.key] != null
-          ? parseFloat(nextOverrides[row.key]) || 0
-          : round2(even),
-      })),
+      selfShare,
+      participantCount: nextCount,
     });
   };
 
-  // Auto even shares across everyone whenever membership changes — edits made
-  // for an older split layout no longer make sense once count changes.
-  const recomputeEven = (nextRows: { key: string; name: string }[]) => {
-    setRows(nextRows);
-    setOverrides({});
-    report(nextRows, {});
+  // Default to no-split (you alone, full bill) whenever the bill amount changes.
+  useEffect(() => {
+    setCount(1);
+    setShare(String(round2(totalAmount)));
+    report(1, String(round2(totalAmount)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [totalAmount]);
+
+  const evenShare = round2(totalAmount / count);
+  const isSolo = count === 1;
+
+  const selectCount = (nextCount: number) => {
+    const even = String(round2(totalAmount / nextCount));
+    setCount(nextCount);
+    setShare(even);
+    report(nextCount, even);
   };
 
-  const setCount = (count: number) => {
-    const target = Math.max(1, Math.min(count, people.length + 1));
-    const used = rows.slice(0, 1);
-    for (const p of people) {
-      if (used.length >= target) break;
-      if (!used.some((r) => r.key === p.id)) used.push({ key: p.id, name: p.display_name });
-    }
-    if (used.length > 1 && target === 1) {
-      // Down to 1 person -> no split.
-      recomputeEven([{ key: SELF_KEY, name: 'You' }]);
-    } else {
-      recomputeEven(used);
-    }
-  };
-
-  const addOther = (person: PersonRow) => {
-    recomputeEven([...rows, { key: person.id, name: person.display_name }]);
-  };
-
-  const removeOther = (key: string) => {
-    const next = rows.filter((r) => r.key !== key);
-    recomputeEven(next.length ? next : [{ key: SELF_KEY, name: 'You' }]);
-  };
-
-  const addNewPerson = () => {
-    const name = newName.trim();
-    if (!name) return;
-    const created = addPerson(name);
-    setNewName('');
-    setPeople(listPeople());
-    recomputeEven([...rows, { key: created.id, name: created.display_name }]);
-  };
-
-  const shareText = (key: string): string => {
-    const overridden = overrides[key];
-    if (overridden != null) return overridden;
-    return totalAmount > 0 ? String(round2(totalAmount / rows.length)) : '';
-  };
-
-  const editShare = (key: string, raw: string) => {
+  const editShare = (raw: string) => {
     const cleaned = sanitizeDecimal(raw);
-    const nextOverrides = { ...overrides, [key]: cleaned };
-    setOverrides(nextOverrides);
-    report(rows, nextOverrides);
+    // Enforce the cap while typing: ignore any edit that would exceed the bill.
+    const numeric = parseFloat(cleaned);
+    if (cleaned !== '' && !Number.isNaN(numeric) && numeric > totalAmount) return;
+    setShare(cleaned);
+    report(count, cleaned);
   };
-
-  // Render helper for the share field on a row.
-  const shareField = (row: { key: string; name: string }) => (
-    <View style={[styles.shareField, { backgroundColor: theme.backgroundElement }]}>
-      <ThemedText type="small">₹</ThemedText>
-      <TextInput
-        style={[styles.shareInput, { color: theme.text }]}
-        value={shareText(row.key)}
-        onChangeText={(raw) => editShare(row.key, raw)}
-        keyboardType="decimal-pad"
-        accessibilityLabel={`Share for ${row.name}`}
-      />
-    </View>
-  );
 
   return (
     <View style={styles.body}>
-      <ThemedText type="subtitle">How many people split this?</ThemedText>
+      <ThemedText type="subtitle">Who's splitting this?</ThemedText>
       <ThemedText type="small" themeColor="textSecondary">
-        Shares split evenly across {rows.length}
+        How many of you share this bill
       </ThemedText>
 
       <View style={styles.countChips}>
-        {QUICK_COUNTS.map((count) => {
-          const active = count === rows.length;
+        {QUICK_COUNTS.map((c) => {
+          const active = c === count;
           return (
             <Pressable
-              key={count}
-              onPress={() => setCount(count)}
+              key={c}
+              onPress={() => selectCount(c)}
               style={[
                 styles.countChip,
                 {
                   backgroundColor: active ? theme.backgroundSelected : theme.backgroundElement,
                 },
               ]}>
-              <ThemedText type="smallBold">{count}</ThemedText>
+              <ThemedText type="smallBold">{c}</ThemedText>
             </Pressable>
           );
         })}
       </View>
 
-      {isSplit && (
-        <>
-          <View style={styles.rows}>
-            {rows.map((row) => (
-              <View key={row.key} style={styles.row}>
-                <ThemedText type="default">{row.name}</ThemedText>
-                {shareField(row)}
-                {row.key !== SELF_KEY && (
-                  <Pressable onPress={() => removeOther(row.key)} hitSlop={8}>
-                    <ThemedText type="small" themeColor="textSecondary">
-                      remove
-                    </ThemedText>
-                  </Pressable>
-                )}
-              </View>
-            ))}
-          </View>
-
-          {/* Pick an existing person not already included. */}
-          {others.length > 0 && (
-            <View style={styles.peopleChips}>
-              <ThemedText type="small" themeColor="textSecondary">
-                Add person:
-              </ThemedText>
-              {others.map((p) => (
-                <Pressable
-                  key={p.id}
-                  onPress={() => addOther(p)}
-                  style={[styles.chip, { backgroundColor: theme.backgroundElement }]}>
-                  <ThemedText type="smallBold">{p.display_name}</ThemedText>
-                </Pressable>
-              ))}
-            </View>
-          )}
-
-          {/* Add someone new inline. */}
-          <View style={styles.newRow}>
+      {isSolo ? (
+        <ThemedText type="small" themeColor="textSecondary">
+          No split — the full {`₹${round2(totalAmount).toFixed(2)}`} is yours
+        </ThemedText>
+      ) : (
+        <View style={styles.splitArea}>
+          <View style={styles.inputRow}>
+            <ThemedText type="title">₹</ThemedText>
             <TextInput
-              style={[styles.newInput, { color: theme.text, backgroundColor: theme.backgroundElement }]}
-              value={newName}
-              onChangeText={setNewName}
-              placeholder="New person's name"
+              style={[styles.input, { color: theme.text }]}
+              value={share}
+              onChangeText={editShare}
+              placeholder="0"
               placeholderTextColor={theme.textSecondary}
-              onSubmitEditing={addNewPerson}
+              selectionColor={theme.backgroundSelected}
+              keyboardType="decimal-pad"
+              inputAccessoryViewButtonLabel="Done"
+              accessibilityLabel="Your share of the bill"
             />
-            <Pressable
-              onPress={addNewPerson}
-              disabled={!newName.trim()}
-              style={[
-                styles.addButton,
-                {
-                  backgroundColor: newName.trim()
-                    ? theme.backgroundSelected
-                    : theme.backgroundElement,
-                },
-              ]}>
-              <ThemedText type="smallBold">Add</ThemedText>
-            </Pressable>
           </View>
-        </>
+          <ThemedText type="small" themeColor="textSecondary">
+            Your share · max {`₹${round2(totalAmount).toFixed(2)}`} · even share is{' '}
+            {`₹${evenShare.toFixed(2)}`}
+          </ThemedText>
+        </View>
       )}
     </View>
   );
@@ -253,66 +155,30 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     justifyContent: 'center',
     gap: Spacing.two,
-  },
-  countChip: {
-    minWidth: 40,
-    paddingHorizontal: Spacing.two,
-    paddingVertical: Spacing.two,
-    borderRadius: Spacing.two,
-    alignItems: 'center',
-  },
-  rows: {
-    alignSelf: 'stretch',
-    gap: Spacing.two,
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: Spacing.three,
-  },
-  shareField: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: Spacing.two,
-    paddingHorizontal: Spacing.two,
-  },
-  shareInput: {
-    fontSize: 18,
-    fontWeight: 600,
-    minWidth: 72,
-    paddingVertical: Spacing.two,
-    textAlign: 'right',
-  },
-  peopleChips: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-    gap: Spacing.two,
     maxWidth: 360,
   },
-  chip: {
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.one,
-    borderRadius: 999,
+  countChip: {
+    minWidth: 44,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: Spacing.two,
+    borderRadius: Spacing.two,
+    alignItems: 'center',
   },
-  newRow: {
-    flexDirection: 'row',
+  splitArea: {
     alignItems: 'center',
     gap: Spacing.two,
-    maxWidth: 320,
-    alignSelf: 'stretch',
   },
-  newInput: {
-    flex: 1,
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.two,
-    borderRadius: Spacing.two,
-    fontSize: 16,
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: Spacing.two,
   },
-  addButton: {
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.two,
-    borderRadius: Spacing.two,
+  input: {
+    fontSize: 48,
+    lineHeight: 52,
+    fontWeight: 600,
+    fontFamily: Fonts.sans,
+    minWidth: 120,
+    textAlign: 'left',
   },
 });

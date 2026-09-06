@@ -2,18 +2,14 @@ import { randomUUID } from 'expo-crypto';
 
 import { db } from './schema';
 
-// Mirrors schema comment on expenses.amount: the expense row's `amount` is
-// YOUR share. totalAmount is the full bill. Slides feed totalAmount + the
-// split participants; self's share is derived here.
-export type ExpenseParticipantInput = {
-  /** 'self' for you (resolved to the real is_self person row), else people.id. */
-  personId: string;
-  displayName: string;
-  shareAmount: number;
-};
-
+// The expense row's `amount` is YOUR share. total_amount is the full bill.
+// Splits are a count + your share: this is a local single-user app, so the
+// other people are never tracked as named participants — they just cover the
+// difference between the bill and your share.
 export type InsertExpenseInput = {
   totalAmount: number;
+  /** Your portion of the bill — stored as expenses.amount. */
+  selfShare: number;
   categoryId: string;
   label: string | null;
   merchant: string | null;
@@ -21,7 +17,6 @@ export type InsertExpenseInput = {
   bankSource: string | null;
   rawSmsText: string | null;
   occurredAt: string; // ISO — actual transaction time
-  participants: ExpenseParticipantInput[];
 };
 
 export type InsertExpenseResult = {
@@ -30,38 +25,23 @@ export type InsertExpenseResult = {
   isSplit: boolean;
 };
 
-const SELF_KEY = 'self';
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
 
-// Atomically writes one completed expense: the expenses row, an
-// expense_participants row per split member (only when split), and an
+// Atomically writes one completed expense: the expenses row and an
 // append-only activity_log 'created' row carrying a full JSON snapshot —
 // all-or-nothing inside a single transaction.
 export function insertExpense(input: InsertExpenseInput): InsertExpenseResult {
   const expenseId = randomUUID();
   const now = new Date().toISOString();
-  const isSplit = input.participants.length > 1;
-
-  // Resolve the self person row (needed for the share + participants FK).
-  const selfRow = db.getFirstSync<{ id: string }>(
-    'SELECT id FROM people WHERE is_self = 1 LIMIT 1'
-  );
-  if (!selfRow) throw new Error('Cannot insert expense: no self person row exists');
-
-  const selfShare =
-    input.participants.find((p) => p.personId === SELF_KEY)?.shareAmount ?? input.totalAmount;
-
-  // Resolve participant person ids ('self' -> real id) and keep display names
-  // for the snapshot.
-  const resolvedParticipants = input.participants.map((p) => ({
-    personId: p.personId === SELF_KEY ? selfRow.id : p.personId,
-    displayName: p.displayName,
-    shareAmount: p.shareAmount,
-  }));
+  const amount = round2(Math.max(0, Math.min(input.selfShare, input.totalAmount)));
+  const isSplit = amount < round2(input.totalAmount);
 
   const snapshot = {
     id: expenseId,
-    total_amount: input.totalAmount,
-    amount: selfShare,
+    total_amount: round2(input.totalAmount),
+    amount,
     currency: 'INR',
     category_id: input.categoryId,
     label: input.label,
@@ -73,11 +53,6 @@ export function insertExpense(input: InsertExpenseInput): InsertExpenseResult {
     occurred_at: input.occurredAt,
     created_at: now,
     updated_at: now,
-    participants: resolvedParticipants.map((p) => ({
-      person_id: p.personId,
-      display_name: p.displayName,
-      share_amount: p.shareAmount,
-    })),
   };
 
   db.withTransactionSync(() => {
@@ -87,8 +62,8 @@ export function insertExpense(input: InsertExpenseInput): InsertExpenseResult {
           source, bank_source, raw_sms_text, is_split, occurred_at, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       expenseId,
-      selfShare,
-      input.totalAmount,
+      amount,
+      round2(input.totalAmount),
       'INR',
       input.categoryId,
       input.label,
@@ -101,22 +76,6 @@ export function insertExpense(input: InsertExpenseInput): InsertExpenseResult {
       now,
       now
     );
-
-    if (isSplit) {
-      for (const p of resolvedParticipants) {
-        db.runSync(
-          `INSERT INTO expense_participants
-             (id, expense_id, person_id, share_amount, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          randomUUID(),
-          expenseId,
-          p.personId,
-          p.shareAmount,
-          now,
-          now
-        );
-      }
-    }
 
     db.runSync(
       `INSERT INTO activity_log
@@ -131,5 +90,5 @@ export function insertExpense(input: InsertExpenseInput): InsertExpenseResult {
     );
   });
 
-  return { expenseId, amount: selfShare, isSplit };
+  return { expenseId, amount, isSplit };
 }

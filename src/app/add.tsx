@@ -13,6 +13,7 @@ import { Spacing } from "@/constants/theme";
 import { CategoryRow } from "@/db/categories";
 import { insertExpense } from "@/db/expenses";
 import { useAddExpenseIntentContext } from "@/hooks/add-expense-intent-provider";
+import { useKeyboardHeight } from "@/hooks/use-keyboard";
 
 const STEP_NAMES = ["Amount", "Category", "Split", "Label", "Preview"] as const;
 const LAST_STEP = STEP_NAMES.length - 1;
@@ -20,6 +21,10 @@ const LAST_STEP = STEP_NAMES.length - 1;
 export default function AddScreen() {
   const { intent, clear } = useAddExpenseIntentContext();
   const router = useRouter();
+  // Bottom padding equal to the keyboard height while it's up, so the centered
+  // slide content + footer reflow above the keyboard (layout shift, not a
+  // transform — transforms on a focused field dismiss the keyboard on iOS).
+  const keyboardHeight = useKeyboardHeight();
   const [currentStep, setCurrentStep] = useState(0);
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState<CategoryRow | null>(null);
@@ -51,15 +56,15 @@ export default function AddScreen() {
     setCurrentStep((step) => Math.max(step - 1, 0));
   };
 
-  const participants = split?.participants ?? [];
   const canConfirm =
-    totalAmount > 0 && category != null && participants.length > 0;
+    totalAmount > 0 && category != null && split != null;
 
   const confirmAndSave = () => {
-    if (!canConfirm || !category) return;
+    if (!canConfirm || !category || !split) return;
     const trimmedLabel = label.trim() || null;
     insertExpense({
       totalAmount,
+      selfShare: split.selfShare,
       categoryId: category.id,
       label: trimmedLabel,
       merchant: smsIntent ? smsIntent.prefill.merchant : null,
@@ -67,7 +72,6 @@ export default function AddScreen() {
       bankSource: smsIntent ? smsIntent.bankSource : null,
       rawSmsText: smsIntent ? smsIntent.rawText : null,
       occurredAt: new Date().toISOString(),
-      participants,
     });
   };
 
@@ -81,7 +85,7 @@ export default function AddScreen() {
   };
 
   return (
-    <ThemedView style={styles.container}>
+    <ThemedView style={[styles.container, { paddingBottom: keyboardHeight }]}>
       {/* Persistent ✕ top corner on every slide — blueprint §3 discard. Nothing
           is written until Preview's confirm, so no confirmation dialog. */}
       <View style={styles.header}>
@@ -120,7 +124,7 @@ export default function AddScreen() {
             label={label}
             merchant={smsIntent ? smsIntent.prefill.merchant : null}
             rawSmsText={smsIntent ? smsIntent.rawText : null}
-            participants={participants}
+            split={split}
             canConfirm={canConfirm}
             onConfirm={confirmAndSave}
             onDone={exitToHome}
