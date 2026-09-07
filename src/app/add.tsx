@@ -1,6 +1,6 @@
 import { useRouter } from "expo-router";
 import { useEffect, useState } from "react";
-import { KeyboardAvoidingView, Platform, Pressable, StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 
 import { AmountSlide } from "@/components/add-flow/amount-slide";
 import { CategorySlide } from "@/components/add-flow/category-slide";
@@ -13,6 +13,7 @@ import { Spacing } from "@/constants/theme";
 import { CategoryRow } from "@/db/categories";
 import { insertExpense } from "@/db/expenses";
 import { useAddExpenseIntentContext } from "@/hooks/add-expense-intent-provider";
+import { useKeyboardHeight } from "@/hooks/use-keyboard";
 
 const STEP_NAMES = ["Amount", "Category", "Split", "Label", "Preview"] as const;
 const LAST_STEP = STEP_NAMES.length - 1;
@@ -20,6 +21,10 @@ const LAST_STEP = STEP_NAMES.length - 1;
 export default function AddScreen() {
   const { intent, clear } = useAddExpenseIntentContext();
   const router = useRouter();
+  // Bottom padding equal to the keyboard height while it's up, so the centered
+  // slide content + footer reflow above the keyboard (layout shift, not a
+  // transform — transforms on a focused field dismiss the keyboard on iOS).
+  const keyboardHeight = useKeyboardHeight();
   const [currentStep, setCurrentStep] = useState(0);
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState<CategoryRow | null>(null);
@@ -51,15 +56,15 @@ export default function AddScreen() {
     setCurrentStep((step) => Math.max(step - 1, 0));
   };
 
-  const participants = split?.participants ?? [];
   const canConfirm =
-    totalAmount > 0 && category != null && participants.length > 0;
+    totalAmount > 0 && category != null && split != null;
 
   const confirmAndSave = () => {
-    if (!canConfirm || !category) return;
+    if (!canConfirm || !category || !split) return;
     const trimmedLabel = label.trim() || null;
     insertExpense({
       totalAmount,
+      selfShare: split.selfShare,
       categoryId: category.id,
       label: trimmedLabel,
       merchant: smsIntent ? smsIntent.prefill.merchant : null,
@@ -67,7 +72,6 @@ export default function AddScreen() {
       bankSource: smsIntent ? smsIntent.bankSource : null,
       rawSmsText: smsIntent ? smsIntent.rawText : null,
       occurredAt: new Date().toISOString(),
-      participants,
     });
   };
 
@@ -81,7 +85,7 @@ export default function AddScreen() {
   };
 
   return (
-    <ThemedView style={styles.container}>
+    <ThemedView style={[styles.container, { paddingBottom: keyboardHeight }]}>
       {/* Persistent ✕ top corner on every slide — blueprint §3 discard. Nothing
           is written until Preview's confirm, so no confirmation dialog. */}
       <View style={styles.header}>
@@ -97,39 +101,27 @@ export default function AddScreen() {
         </Pressable>
       </View>
 
-      <KeyboardAvoidingView
-        style={styles.step}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-      >
-        {isAmountStep ? (
-          <AmountSlide
-            value={amount}
-            onChangeAmount={setAmount}
-            autoFocus={isManual}
-          />
-        ) : currentStep === 1 ? (
-          <CategorySlide
-            selectedId={category?.id ?? null}
-            onSelect={setCategory}
-          />
-        ) : currentStep === 2 ? (
-          <SplitSlide totalAmount={totalAmount} onChange={setSplit} />
-        ) : currentStep === 3 ? (
-          <LabelSlide value={label} onChangeLabel={setLabel} />
-        ) : (
-          <PreviewSlide
-            totalAmount={totalAmount}
-            categoryName={category?.name ?? null}
-            label={label}
-            merchant={smsIntent ? smsIntent.prefill.merchant : null}
-            rawSmsText={smsIntent ? smsIntent.rawText : null}
-            participants={participants}
-            canConfirm={canConfirm}
-            onConfirm={confirmAndSave}
-            onDone={exitToHome}
-          />
-        )}
-      </KeyboardAvoidingView>
+      {isAmountStep ? (
+        <AmountSlide value={amount} onChangeAmount={setAmount} autoFocus={isManual} />
+      ) : currentStep === 1 ? (
+        <CategorySlide selectedId={category?.id ?? null} onSelect={setCategory} />
+      ) : currentStep === 2 ? (
+        <SplitSlide totalAmount={totalAmount} onChange={setSplit} />
+      ) : currentStep === 3 ? (
+        <LabelSlide value={label} onChangeLabel={setLabel} />
+      ) : (
+        <PreviewSlide
+          totalAmount={totalAmount}
+          categoryName={category?.name ?? null}
+          label={label}
+          merchant={smsIntent ? smsIntent.prefill.merchant : null}
+          rawSmsText={smsIntent ? smsIntent.rawText : null}
+          split={split}
+          canConfirm={canConfirm}
+          onConfirm={confirmAndSave}
+          onDone={exitToHome}
+        />
+      )}
 
       <View style={styles.footer}>
         {currentStep > 0 && (
@@ -157,11 +149,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-  },
-  step: {
-    flex: 1,
-    justifyContent: "center",
-    paddingVertical: Spacing.two,
   },
   footer: {
     flexDirection: "row",

@@ -1,4 +1,4 @@
-import { KeyboardAvoidingView, Platform, StyleSheet, TextInput, View } from 'react-native';
+import { StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { Fonts, Spacing, ThemeColor } from '@/constants/theme';
@@ -27,10 +27,7 @@ export function AmountSlide({ value, onChangeAmount, autoFocus }: AmountSlidePro
   const placeholderColor: ThemeColor = 'textSecondary';
 
   return (
-    <KeyboardAvoidingView
-      style={styles.wrapper}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
+    <View style={styles.wrapper}>
       <View style={styles.body}>
         <ThemedText type="subtitle">How much?</ThemedText>
         <ThemedText type="small" themeColor={placeholderColor}>
@@ -57,7 +54,7 @@ export function AmountSlide({ value, onChangeAmount, autoFocus }: AmountSlidePro
           />
         </View>
       </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
