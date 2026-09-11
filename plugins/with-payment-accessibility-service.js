@@ -3,6 +3,7 @@ const {
   withStringsXml,
   withDangerousMod,
   withMainApplication,
+  withAppBuildGradle,
   AndroidConfig,
 } = require('@expo/config-plugins');
 const fs = require('fs');
@@ -114,6 +115,19 @@ function withPaymentAccessibilityService(config) {
     return config;
   });
 
+  // JUnit for the native parser unit tests (app/src/test).
+  config = withAppBuildGradle(config, (config) => {
+    let contents = config.modResults.contents;
+    if (!contents.includes('junit:junit')) {
+      contents = contents.replace(
+        /dependencies\s*\{/,
+        'dependencies {\n    testImplementation("junit:junit:4.13.2")'
+      );
+      config.modResults.contents = contents;
+    }
+    return config;
+  });
+
   config = withDangerousMod(config, [
     'android',
     (config) => {
@@ -147,6 +161,25 @@ function withPaymentAccessibilityService(config) {
         'utf8'
       );
       fs.writeFileSync(path.join(xmlDir, 'accessibility_service_config.xml'), xmlTemplate);
+
+      // Unit tests -> app/src/test/java/<package>
+      const testTemplatesDir = path.join(TEMPLATES_DIR, 'test');
+      if (fs.existsSync(testTemplatesDir)) {
+        const testDir = path.join(
+          projectRoot,
+          'app',
+          'src',
+          'test',
+          'java',
+          ...packageName.split('.')
+        );
+        fs.mkdirSync(testDir, { recursive: true });
+        for (const file of fs.readdirSync(testTemplatesDir).filter((f) => f.endsWith('.kt'))) {
+          const source = fs.readFileSync(path.join(testTemplatesDir, file), 'utf8');
+          const kotlin = source.replace(/^package .*$/m, `package ${packageName}`);
+          fs.writeFileSync(path.join(testDir, file), kotlin);
+        }
+      }
 
       return config;
     },
