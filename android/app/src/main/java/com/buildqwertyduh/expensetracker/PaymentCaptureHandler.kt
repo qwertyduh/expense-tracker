@@ -35,6 +35,11 @@ class PaymentCaptureHandler(context: Context) {
         get() = PaymentAccessibilityService.instance ?: appContext
 
     fun onCommitted(rawText: String) {
+        if (!PaymentPrefs.isEnabled(appContext)) {
+            Log.i(TAG, "detection paused, ignoring")
+            return
+        }
+
         val parsed = GpayParser.parse(rawText)
         Log.i(TAG, "onCommitted amount=${parsed.amount} payee=${parsed.payee}")
         if (!isNew(parsed)) return
@@ -48,8 +53,23 @@ class PaymentCaptureHandler(context: Context) {
 
         val amount = parsed.amount
         val payee = parsed.payee?.takeIf { it.isNotBlank() }
+        val mode = PaymentPrefs.mode(appContext)
 
-        if (amount != null && payee != null) {
+        // Auto-all: never prompt. Known payee -> its memory; otherwise Unsorted.
+        if (mode == PaymentPrefs.MODE_AUTO_ALL && amount != null) {
+            val memory = if (payee != null) db.merchantMemory(payee) else null
+            if (memory != null && payee != null) {
+                Log.i(TAG, "auto-all: known payee, auto-saving")
+                autoSave(amount, payee, rawText, memory)
+            } else {
+                Log.i(TAG, "auto-all: saving to Unsorted")
+                saveUnsorted(amount, payee, rawText)
+            }
+            return
+        }
+
+        // Auto (default): known payee -> auto-save; everything else -> card.
+        if (mode != PaymentPrefs.MODE_ASK && amount != null && payee != null) {
             val memory = db.merchantMemory(payee)
             if (memory != null) {
                 Log.i(TAG, "known payee, auto-saving")
@@ -58,6 +78,15 @@ class PaymentCaptureHandler(context: Context) {
             }
         }
         showOverlay(amount, payee, rawText)
+    }
+
+    private fun saveUnsorted(total: Double, payee: String?, rawText: String) {
+        val unsortedId = db.unsortedCategoryId()
+            ?: db.ensureCategory(ExpenseDb.UNSORTED_NAME).id
+        val id = db.insertExpense(
+            ExpenseDb.NewExpense(total, total, unsortedId, null, payee, sanitize(rawText))
+        )
+        if (id != null) toast("Saved to Unsorted")
     }
 
     private fun autoSave(total: Double, payee: String, rawText: String, memory: ExpenseDb.MerchantMemory) {
@@ -116,12 +145,7 @@ class PaymentCaptureHandler(context: Context) {
                 override fun onTimedOut() {
                     overlay = null
                     val total = amount ?: return
-                    val unsortedId = db.unsortedCategoryId()
-                        ?: db.ensureCategory(ExpenseDb.UNSORTED_NAME).id
-                    db.insertExpense(
-                        ExpenseDb.NewExpense(total, total, unsortedId, null, payee, sanitize(rawText))
-                    )
-                    toast("Saved to Unsorted")
+                    saveUnsorted(total, payee, rawText)
                 }
 
                 override fun onDismissed() {

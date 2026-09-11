@@ -2,6 +2,7 @@ const {
   withAndroidManifest,
   withStringsXml,
   withDangerousMod,
+  withMainApplication,
   AndroidConfig,
 } = require('@expo/config-plugins');
 const fs = require('fs');
@@ -62,6 +63,24 @@ function withPaymentAccessibilityService(config) {
       ],
     });
 
+    // Quick Settings tile to pause/resume detection.
+    app.service.push({
+      $: {
+        'android:name': '.PaymentTileService',
+        'android:exported': 'true',
+        'android:icon': '@mipmap/ic_launcher',
+        'android:label': 'Expense capture',
+        'android:permission': 'android.permission.BIND_QUICK_SETTINGS_TILE',
+      },
+      'intent-filter': [
+        {
+          action: [
+            { $: { 'android:name': 'android.service.quicksettings.action.QS_TILE' } },
+          ],
+        },
+      ],
+    });
+
     // Debug-only trigger so the capture flow can be exercised without a real
     // payment: adb shell am broadcast -a com.buildqwertyduh.expensetracker.DEBUG_CAPTURE --es text "..."
     // DebugCaptureReceiver ignores the broadcast unless BuildConfig.DEBUG.
@@ -79,6 +98,19 @@ function withPaymentAccessibilityService(config) {
         },
       ],
     });
+    return config;
+  });
+
+  // Register the JS bridge module (pause state / mode / accessibility status).
+  config = withMainApplication(config, (config) => {
+    let contents = config.modResults.contents;
+    if (!contents.includes('PaymentDetectionPackage')) {
+      contents = contents.replace(
+        /PackageList\(this\)\.packages\.apply\s*\{/,
+        'PackageList(this).packages.apply {\n          add(PaymentDetectionPackage())'
+      );
+      config.modResults.contents = contents;
+    }
     return config;
   });
 

@@ -1,17 +1,25 @@
 import * as Linking from 'expo-linking';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { Alert, Modal, Platform, Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { Alert, Modal, Platform, Pressable, StyleSheet, Switch, TextInput, View } from 'react-native';
 
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import { Chip } from '@/components/ui/chip';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Screen, ScreenHeader } from '@/components/ui/screen';
 import { ThemedText } from '@/components/themed-text';
 import { Radius, Spacing } from '@/constants/theme';
 import { forgetMerchant, listMerchantMemory, type MerchantMemoryRow } from '@/db/merchant-memory';
 import { getSelf, updateSelfName } from '@/db/people';
+import { paymentDetection, type DetectionMode } from '@/lib/payment-detection';
 import { useTheme } from '@/hooks/use-theme';
+
+const MODES: { value: DetectionMode; label: string; hint: string }[] = [
+  { value: 'auto', label: 'Auto if known', hint: 'Known payees save silently; new ones ask.' },
+  { value: 'ask', label: 'Always ask', hint: 'Show the category card for every payment.' },
+  { value: 'auto_all', label: 'Fully automatic', hint: 'Never ask; unknown payees go to Unsorted.' },
+];
 
 export default function SettingsScreen() {
   const theme = useTheme();
@@ -19,10 +27,18 @@ export default function SettingsScreen() {
   const [memory, setMemory] = useState<MerchantMemoryRow[]>([]);
   const [editorOpen, setEditorOpen] = useState(false);
   const [draft, setDraft] = useState('');
+  const [detectionEnabled, setDetectionEnabled] = useState(true);
+  const [mode, setMode] = useState<DetectionMode>('auto');
+  const [serviceEnabled, setServiceEnabled] = useState(false);
 
   const reload = useCallback(() => {
     setSelfName(getSelf()?.display_name ?? '');
     setMemory(listMerchantMemory());
+    if (paymentDetection.available) {
+      paymentDetection.isEnabled().then(setDetectionEnabled).catch(() => {});
+      paymentDetection.getMode().then(setMode).catch(() => {});
+      paymentDetection.isAccessibilityServiceEnabled().then(setServiceEnabled).catch(() => {});
+    }
   }, []);
 
   useFocusEffect(
@@ -35,6 +51,16 @@ export default function SettingsScreen() {
     if (Platform.OS === 'android') {
       Linking.sendIntent('android.settings.ACCESSIBILITY_SETTINGS');
     }
+  };
+
+  const toggleDetection = (next: boolean) => {
+    setDetectionEnabled(next);
+    paymentDetection.setEnabled(next).catch(() => {});
+  };
+
+  const chooseMode = (next: DetectionMode) => {
+    setMode(next);
+    paymentDetection.setMode(next).catch(() => {});
   };
 
   const saveName = () => {
@@ -58,6 +84,8 @@ export default function SettingsScreen() {
     ]);
   };
 
+  const activeMode = MODES.find((m) => m.value === mode);
+
   return (
     <Screen>
       <ScreenHeader title="Settings" />
@@ -76,13 +104,49 @@ export default function SettingsScreen() {
       </Card>
 
       {Platform.OS === 'android' ? (
-        <Card>
-          <ThemedText type="smallBold">Payment detection</ThemedText>
+        <Card style={styles.detectionCard}>
+          <View style={styles.rowBetween}>
+            <ThemedText type="smallBold">Payment detection</ThemedText>
+            <Switch value={detectionEnabled} onValueChange={toggleDetection} />
+          </View>
+
+          <View style={styles.rowBetween}>
+            <ThemedText type="small" themeColor="textSecondary">
+              Accessibility service
+            </ThemedText>
+            <ThemedText type="smallBold" style={{ color: serviceEnabled ? theme.success : theme.danger }}>
+              {serviceEnabled ? 'Enabled' : 'Not enabled'}
+            </ThemedText>
+          </View>
+
           <ThemedText type="small" themeColor="textSecondary">
-            Reads the GPay PIN screen on your device to auto-log payments. Nothing leaves your
-            phone. Enable it in Accessibility settings.
+            Reads the GPay PIN screen on your device. Nothing leaves your phone.
           </ThemedText>
-          <Button title="Open accessibility settings" variant="secondary" onPress={openSettings} />
+
+          <Button
+            title={serviceEnabled ? 'Accessibility settings' : 'Enable in accessibility settings'}
+            variant={serviceEnabled ? 'secondary' : 'primary'}
+            onPress={openSettings}
+          />
+
+          <ThemedText type="smallBold" style={styles.modeTitle}>
+            When a payment is detected
+          </ThemedText>
+          <View style={styles.modeChips}>
+            {MODES.map((item) => (
+              <Chip
+                key={item.value}
+                label={item.label}
+                selected={item.value === mode}
+                onPress={() => chooseMode(item.value)}
+              />
+            ))}
+          </View>
+          {activeMode ? (
+            <ThemedText type="small" themeColor="textSecondary">
+              {activeMode.hint}
+            </ThemedText>
+          ) : null}
         </Card>
       ) : null}
 
@@ -148,6 +212,23 @@ export default function SettingsScreen() {
 }
 
 const styles = StyleSheet.create({
+  detectionCard: {
+    gap: Spacing.three,
+  },
+  rowBetween: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.three,
+  },
+  modeTitle: {
+    marginTop: Spacing.one,
+  },
+  modeChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.two,
+  },
   sectionTitle: {
     marginTop: Spacing.two,
   },
