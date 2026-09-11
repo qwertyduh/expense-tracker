@@ -40,7 +40,6 @@ example
 
 # generated native folders
 /ios
-/android
 
 # AI / Coding Agent configs
 .claude/
