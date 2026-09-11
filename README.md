@@ -81,25 +81,42 @@ src/
 │   ├── _layout.tsx        → root Stack (wraps tabs + add.tsx as a modal)
 │   ├── (tabs)/
 │   │   ├── _layout.tsx      → tab bar (NativeTabs)
-│   │   ├── index.tsx         → Home Dashboard
-│   │   └── explore.tsx       → unused template screen
-│   └── add.tsx             → Add Expense slide flow
+│   │   ├── index.tsx         → Home dashboard (summary, pie chart, recent)
+│   │   ├── history.tsx       → activity-log feed
+│   │   ├── categories.tsx    → category management (add/rename/reorder)
+│   │   └── settings.tsx      → name, detection controls, learned payees
+│   ├── add.tsx             → Add Expense slide flow (manual + deep link)
+│   └── expense/[id].tsx    → transaction detail (view / edit / delete)
 ├── components/
-│   └── add-flow/           → one component per slide in the add flow
+│   ├── add-flow/           → one component per slide in the add flow
+│   └── ui/                 → shared UI kit (Button, Card, Chip, FAB, …)
 ├── hooks/
 │   ├── useAddExpenseIntent.ts         → deep link → intent (cold + warm start)
 │   └── add-expense-intent-provider.tsx → root-level listener + routing to /add
 ├── db/
 │   ├── schema.ts          → CREATE TABLE statements + initDatabase()
 │   ├── seed.ts             → default categories + self person
-│   ├── categories.ts        → quick-pick + full-list queries
+│   ├── categories.ts        → quick-pick + full-list + management
 │   ├── people.ts             → self lookup, find-or-create for splits
-│   └── expenses.ts             → insertExpense() (transactional), queries
+│   ├── expenses.ts             → insertExpense() (transactional) + queries
+│   ├── activity.ts            → activity-log feed
+│   └── merchant-memory.ts     → payee → category memory (Android capture)
+├── lib/
+│   ├── format.ts            → currency / date formatting
+│   └── payment-detection.ts → JS bridge to the Android capture module
 └── parsers/
     ├── types.ts            → ParsedTransaction interface
     ├── hdfc.ts              → HDFC UPI + Card SMS regex parsing
+    ├── gpay.ts              → GPay PIN-screen parsing (Android capture)
     └── index.ts              → parseSms(bank, text) dispatcher
+
+plugins/                     → Android config plugin + native Kotlin templates
 ```
+
+Both platforms render the **same UI** (`src/app`, `src/components`). Only the
+capture mechanism differs: iOS uses the Shortcut → deep link → Add flow, Android
+uses the accessibility overlay. Both funnel into the same `src/db/` and
+`src/parsers/` code.
 
 Full architecture, schema, and decision rationale:
 see `docs/expense-tracker-v1-blueprint.md`.
@@ -165,16 +182,26 @@ to avoid silently skipping the change on devices that already have data.
 
 ## Android Track
 
-Android doesn't have iOS's SMS-reading restriction, so the Shortcuts
-workaround isn't needed there — a native SMS listener can trigger the exact
-same internal deep link (`expensetracker://add?bank=hdfc&data=...`) that
-iOS's Shortcut builds, reusing the entire parsing/routing/DB pipeline
-unchanged. The `android/` directory has the scaffolded project; a task
-breakdown for this track hasn't been written yet.
+Android can't use the iOS Shortcuts route, so capture is native:
 
-**Contribution convention:** Android-specific work stays isolated to a new
-`android-sms/` module; `src/parsers/`, `src/db/`, and `src/app/add.tsx` are shared and
-should only change with both platforms' agreement, since a change there
-affects both.
+- An **AccessibilityService** (`plugins/templates/PaymentAccessibilityService.kt`)
+  watches GPay, reads the "Enter your PIN" screen (amount + payee) — with a
+  fallback across all interactive windows — and fires on the Pay tap.
+- A **floating overlay card** (`PaymentOverlayController.kt`) prompts for
+  category + split on top of GPay, so the app never opens, then writes straight
+  to the same SQLite DB via `ExpenseDb.kt`. If the card can't be drawn it falls
+  back to the in-app Add flow.
+- A **Quick Settings tile** pauses/resumes detection, backed by a small native
+  module (`PaymentDetectionModule.kt`) that also powers the Settings screen.
+
+The generated `android/` project is produced by `expo prebuild` from the
+committed config plugin (`plugins/with-payment-accessibility-service.js`) and the
+Kotlin templates, so it is gitignored — run `npx expo prebuild -p android` (or
+just `npx expo run:android`) to regenerate it.
+
+**Contribution convention:** platform capture code stays isolated — Android
+under `plugins/` (+ generated `android/`), iOS under its Shortcut/deep-link flow.
+`src/app/`, `src/components/`, `src/db/`, and `src/parsers/` are shared and
+should only change with both platforms' agreement.
 
 ---
