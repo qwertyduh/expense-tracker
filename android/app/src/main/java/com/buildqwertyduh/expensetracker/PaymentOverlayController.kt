@@ -41,6 +41,8 @@ class PaymentOverlayController(
         fun onSelected(categoryName: String, splitCount: Int, amount: Double)
         fun onTimedOut()
         fun onDismissed()
+        /** The overlay window could not be added — caller should fall back. */
+        fun onFailedToShow()
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -96,7 +98,7 @@ class PaymentOverlayController(
         } catch (e: Exception) {
             Log.e(TAG, "failed to add overlay window", e)
             root = null
-            listener.onDismissed()
+            listener.onFailedToShow()
             return
         }
         root = card

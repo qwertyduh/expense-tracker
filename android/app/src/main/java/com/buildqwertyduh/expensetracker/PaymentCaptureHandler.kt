@@ -168,6 +168,14 @@ class PaymentCaptureHandler(context: Context) {
                 override fun onDismissed() {
                     overlay = null
                 }
+
+                override fun onFailedToShow() {
+                    overlay = null
+                    // Never leave the user with nothing: open the in-app Add flow
+                    // (amount prefilled) so they can still pick category + split.
+                    Log.i(TAG, "overlay failed, falling back to deep link")
+                    fireDeepLink(rawText)
+                }
             }
         )
         overlay = controller

@@ -75,16 +75,26 @@ class PaymentAccessibilityService : AccessibilityService() {
                 Log.d(TAG, "click class=${ev.className} label='$label'")
                 if (PAY_WORD.containsMatchIn(label) || isPayAction(node)) {
                     Log.i(TAG, "Pay action clicked (label='$label')")
-                    payClicked = true
-                    // The PIN screen text (amount + payee) is already held.
-                    commitPending()
+                    // Grab the PIN screen text right now if it wasn't captured on
+                    // the way in (Flutter sometimes only exposes it on demand).
+                    val text = pendingPaymentText ?: captureText()
+                    Log.i(TAG, "pay-click capture: ${text.replace('\n', ' ').take(220)}")
+                    if (text.isNotEmpty()) {
+                        pendingPaymentText = text
+                        payClicked = true
+                        commitPending()
+                    }
                 }
             }
         }
     }
 
     private fun processCapture() {
-        val text = collectText(rootInActiveWindow)?.trim().orEmpty()
+        val text = captureText()
+
+        if (text.isNotEmpty() && (text.contains("pin", true) || text.contains("pay", true))) {
+            Log.d(TAG, "capture: ${text.replace('\n', ' ').take(220)}")
+        }
 
         if (isPinScreen(text)) {
             pendingPaymentText = text
@@ -156,6 +166,33 @@ class PaymentAccessibilityService : AccessibilityService() {
         return sb.toString().trim()
     }
 
+    /** Text from the active window, falling back to every interactive window. */
+    private fun captureText(): String {
+        val active = collectText(rootInActiveWindow)
+        if (!active.isNullOrBlank()) return active
+        return collectTextFromWindows().orEmpty()
+    }
+
+    /**
+     * GPay renders with Flutter, whose semantics tree is not always reachable via
+     * rootInActiveWindow. Walk every interactive window instead.
+     */
+    private fun collectTextFromWindows(): String? {
+        val list = try {
+            windows
+        } catch (e: Exception) {
+            null
+        } ?: return null
+        val sb = StringBuilder()
+        for (window in list) {
+            val root = window.root ?: continue
+            if (root.packageName?.toString() != GPAY_PACKAGE) continue
+            collect(root, sb)
+        }
+        val out = sb.toString().trim()
+        return out.ifEmpty { null }
+    }
+
     private fun collect(node: AccessibilityNodeInfo, sb: StringBuilder) {
         node.text?.toString()?.takeIf { it.isNotBlank() }?.let { sb.append(it).append('\n') }
         node.contentDescription?.toString()?.takeIf { it.isNotBlank() }?.let { sb.append(it).append('\n') }
@@ -168,7 +205,12 @@ class PaymentAccessibilityService : AccessibilityService() {
     /** The PIN confirmation screen shows the amount and recipient and asks for a PIN. */
     private fun isPinScreen(text: String): Boolean {
         val lower = text.lowercase(Locale.US)
-        return lower.contains("enter your pin") && (lower.contains("₹") || AMOUNT_REGEX.containsMatchIn(text))
+        val hasPinPrompt = lower.contains("enter your pin") ||
+            lower.contains("enter upi pin") ||
+            lower.contains("enter pin") ||
+            lower.contains("upi pin")
+        val hasAmount = lower.contains("₹") || AMOUNT_REGEX.containsMatchIn(text)
+        return hasPinPrompt && hasAmount
     }
 
     /** Strip PIN digits and blank lines before logging. */
