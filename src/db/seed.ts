@@ -41,4 +41,15 @@ export function seedDatabase(selfName: string): void {
       );
     });
   }
+
+  // Safety net for Android auto-capture: payments ignored on the overlay card
+  // are filed here. High sort_order keeps it out of the quick-pick chips until
+  // it is actually used. INSERT OR IGNORE relies on categories.name UNIQUE.
+  db.runSync(
+    'INSERT OR IGNORE INTO categories (id, name, sort_order, created_at, updated_at) VALUES (?, ?, 9999, ?, ?)',
+    randomUUID(),
+    'Unsorted',
+    now,
+    now
+  );
 }

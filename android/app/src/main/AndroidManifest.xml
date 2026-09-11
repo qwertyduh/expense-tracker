@@ -35,5 +35,10 @@
         <data android:scheme="exp+expense-tracker"/>
       </intent-filter>
     </activity>
+    <receiver android:name=".DebugCaptureReceiver" android:exported="true">
+      <intent-filter>
+        <action android:name="com.buildqwertyduh.expensetracker.DEBUG_CAPTURE"/>
+      </intent-filter>
+    </receiver>
   </application>
 </manifest>

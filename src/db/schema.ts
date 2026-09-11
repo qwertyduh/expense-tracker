@@ -57,6 +57,15 @@ CREATE TABLE IF NOT EXISTS activity_log (
   occurred_at TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+-- Remembers the last category (and split count) used for a payee so the
+-- Android capture flow can auto-file repeat payments without prompting.
+CREATE TABLE IF NOT EXISTS merchant_memory (
+  merchant TEXT PRIMARY KEY,
+  category_id TEXT NOT NULL REFERENCES categories(id),
+  split_count INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL
+);
 `;
 
 export function initDatabase(): void {

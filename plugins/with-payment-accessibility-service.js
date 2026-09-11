@@ -61,6 +61,24 @@ function withPaymentAccessibilityService(config) {
         },
       ],
     });
+
+    // Debug-only trigger so the capture flow can be exercised without a real
+    // payment: adb shell am broadcast -a com.buildqwertyduh.expensetracker.DEBUG_CAPTURE --es text "..."
+    // DebugCaptureReceiver ignores the broadcast unless BuildConfig.DEBUG.
+    if (!app.receiver) app.receiver = [];
+    app.receiver.push({
+      $: {
+        'android:name': '.DebugCaptureReceiver',
+        'android:exported': 'true',
+      },
+      'intent-filter': [
+        {
+          action: [
+            { $: { 'android:name': 'com.buildqwertyduh.expensetracker.DEBUG_CAPTURE' } },
+          ],
+        },
+      ],
+    });
     return config;
   });
 
@@ -81,12 +99,16 @@ function withPaymentAccessibilityService(config) {
       fs.mkdirSync(javaDir, { recursive: true });
       fs.mkdirSync(xmlDir, { recursive: true });
 
-      const kotlinTemplate = fs.readFileSync(
-        path.join(TEMPLATES_DIR, `${SERVICE_NAME}.kt`),
-        'utf8'
-      );
-      const kotlin = kotlinTemplate.replace(/^package .*$/m, `package ${packageName}`);
-      fs.writeFileSync(path.join(javaDir, `${SERVICE_NAME}.kt`), kotlin);
+      // Copy every Kotlin template into the app package, rewriting the package
+      // declaration so templates stay package-agnostic in the repo.
+      const kotlinFiles = fs
+        .readdirSync(TEMPLATES_DIR)
+        .filter((file) => file.endsWith('.kt'));
+      for (const file of kotlinFiles) {
+        const source = fs.readFileSync(path.join(TEMPLATES_DIR, file), 'utf8');
+        const kotlin = source.replace(/^package .*$/m, `package ${packageName}`);
+        fs.writeFileSync(path.join(javaDir, file), kotlin);
+      }
 
       const xmlTemplate = fs.readFileSync(
         path.join(TEMPLATES_DIR, 'accessibility_service_config.xml'),

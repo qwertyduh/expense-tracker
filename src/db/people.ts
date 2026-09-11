@@ -29,3 +29,17 @@ export function addPerson(displayName: string): PersonRow {
   );
   return { id, display_name: displayName, is_self: 0, created_at: now, updated_at: now };
 }
+
+export function getSelf(): PersonRow | null {
+  return db.getFirstSync<PersonRow>('SELECT * FROM people WHERE is_self = 1 LIMIT 1') ?? null;
+}
+
+export function updateSelfName(name: string): void {
+  const now = new Date().toISOString();
+  db.runSync(
+    'UPDATE people SET display_name = ?, updated_at = ? WHERE is_self = 1',
+    name.trim(),
+    now
+  );
+}
+

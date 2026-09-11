@@ -9,22 +9,42 @@ import { Platform } from 'react-native';
 
 export const Colors = {
   light: {
-    text: '#000000',
-    background: '#ffffff',
-    backgroundElement: '#F0F0F3',
-    backgroundSelected: '#E0E1E6',
+    text: '#0B0B0C',
+    background: '#F7F7F8',
+    backgroundElement: '#FFFFFF',
+    backgroundSelected: '#E7EEFB',
     textSecondary: '#60646C',
+    accent: '#3C87F7',
+    accentSoft: '#E7EEFB',
+    border: '#E4E4E7',
+    success: '#1F9D55',
+    danger: '#E5484D',
+    warning: '#B7791F',
   },
   dark: {
-    text: '#ffffff',
-    background: '#000000',
-    backgroundElement: '#212225',
-    backgroundSelected: '#2E3135',
-    textSecondary: '#B0B4BA',
+    text: '#F5F5F6',
+    background: '#0B0B0C',
+    backgroundElement: '#1A1B1E',
+    backgroundSelected: '#22304A',
+    textSecondary: '#9BA1A6',
+    accent: '#5B9BFF',
+    accentSoft: '#1B2A44',
+    border: '#2A2B2F',
+    success: '#3DD68C',
+    danger: '#FF6369',
+    warning: '#F5C062',
   },
 } as const;
 
 export type ThemeColor = keyof typeof Colors.light & keyof typeof Colors.dark;
+
+export const Radius = {
+  sm: 8,
+  md: 12,
+  lg: 18,
+  pill: 999,
+} as const;
+
 
 export const Fonts = Platform.select({
   ios: {

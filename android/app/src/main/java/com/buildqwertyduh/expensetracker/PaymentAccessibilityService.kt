@@ -1,8 +1,6 @@
 package com.buildqwertyduh.expensetracker
 
 import android.accessibilityservice.AccessibilityService
-import android.content.Intent
-import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -11,50 +9,81 @@ import android.view.accessibility.AccessibilityNodeInfo
 import java.util.Locale
 
 /**
- * Captures GPay's "Enter your PIN" confirmation screen, which is readable by an
- * accessibility service and already contains the amount ("Pay ₹1.00") and
- * recipient ("To Pranay Bansal"). The subsequent "Payment successful" screen is
- * FLAG_SECURE (unreadable), so we can't see it — instead we hold the PIN screen
- * and fire the deep link once the user leaves it (i.e. commits the payment).
+ * Watches GPay and detects a committed payment.
  *
- * Trade-off: we can't verify success, so a cancelled/declined payment may still
- * open the pre-filled add flow; the user can discard it with the ✕. This is the
- * accepted cost of the PIN-screen approach.
+ * The "Enter your PIN" screen is readable and already contains the amount
+ * ("Pay ₹1.00") and recipient ("To Pranay Bansal"). The "Payment successful"
+ * screen is FLAG_SECURE (unreadable), so we can't confirm success directly —
+ * instead we treat a click on the PIN screen's Pay action as the commit signal,
+ * which avoids the cancel/back false positives of a "left the screen" heuristic.
  *
- * The deep link (expensetracker://add?bank=gpay&data=<text>) reuses the existing
- * JS deep-link -> parser -> prefill pipeline.
+ * On commit the raw (PIN-stripped) screen text is handed to
+ * [PaymentCaptureHandler], which either auto-saves (known payee) or shows the
+ * floating category/split card (unknown payee).
  */
 class PaymentAccessibilityService : AccessibilityService() {
 
     private val handler = Handler(Looper.getMainLooper())
     private var pendingPaymentText: String? = null
-    private var lastFiredAt: Long = 0L
+    private var payClicked = false
 
     private val captureRunnable = Runnable { processCapture() }
+    private val captureHandler by lazy { PaymentCaptureHandler(applicationContext) }
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        instance = this
+        reset()
+        Log.i(TAG, "service connected")
+    }
+
+    override fun onInterrupt() = reset()
+
+    override fun onDestroy() {
+        if (instance === this) instance = null
+        reset()
+        super.onDestroy()
+    }
+
+    private fun reset() {
+        handler.removeCallbacks(captureRunnable)
+        pendingPaymentText = null
+        payClicked = false
+    }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        val pkg = event?.packageName?.toString() ?: rootInActiveWindow?.packageName?.toString()
+        val ev = event ?: return
+        val pkg = ev.packageName?.toString() ?: rootInActiveWindow?.packageName?.toString()
         if (pkg != GPAY_PACKAGE) return
 
-        val type = event?.eventType ?: return
-        if (type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
-            type != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-        ) return
+        when (ev.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
+                // Capture immediately (fast PIN-entry transitions) and again shortly
+                // after (to catch the "left the PIN screen" transition).
+                processCapture()
+                handler.removeCallbacks(captureRunnable)
+                handler.postDelayed(captureRunnable, CAPTURE_DELAY_MS)
+            }
 
-        // Capture immediately (fast PIN-entry transitions), and again shortly
-        // after (to catch the "left the PIN screen" transition, whose target may
-        // be a FLAG_SECURE window that reads back as null/empty).
-        processCapture()
-        handler.removeCallbacks(captureRunnable)
-        handler.postDelayed(captureRunnable, CAPTURE_DELAY_MS)
+            AccessibilityEvent.TYPE_VIEW_CLICKED -> {
+                val node = ev.source ?: return
+                if (isPayAction(node)) {
+                    Log.i(TAG, "Pay action clicked")
+                    payClicked = true
+                    // The PIN screen text (amount + payee) is already held.
+                    commitPending()
+                }
+            }
+        }
     }
 
     private fun processCapture() {
         val text = collectText(rootInActiveWindow)?.trim().orEmpty()
 
         if (isPinScreen(text)) {
-            // Remember the latest PIN screen (amount + recipient are stable).
             pendingPaymentText = text
+            payClicked = false
             Log.i(TAG, "holding PIN screen: ${summarize(text)}")
             return
         }
@@ -62,31 +91,50 @@ class PaymentAccessibilityService : AccessibilityService() {
         val held = pendingPaymentText ?: return
         pendingPaymentText = null
 
-        val lower = text.lowercase(Locale.US)
-        if (FAILURE_MARKERS.any { lower.contains(it) }) {
-            Log.i(TAG, "looks like a failure, discarding held payment")
+        if (FAILURE_MARKERS.any { text.lowercase(Locale.US).contains(it) }) {
+            Log.i(TAG, "failure screen, discarding held payment")
+            payClicked = false
             return
         }
 
-        val now = System.currentTimeMillis()
-        if (now - lastFiredAt < COOLDOWN_MS) {
-            Log.i(TAG, "cooldown, not firing")
+        if (!payClicked) {
+            Log.i(TAG, "left PIN screen without a Pay click, discarding")
             return
         }
 
-        lastFiredAt = now
-        Log.i(TAG, "payment committed, firing deep link: ${summarize(held)}")
-        fireDeepLink(held)
+        payClicked = false
+        commit(held)
     }
 
-    override fun onServiceConnected() {
-        super.onServiceConnected()
-        Log.i(TAG, "service connected")
+    private fun commitPending() {
+        val held = pendingPaymentText ?: return
         pendingPaymentText = null
-        lastFiredAt = 0L
+        payClicked = false
+        commit(held)
     }
 
-    override fun onInterrupt() {}
+    private fun commit(rawText: String) {
+        Log.i(TAG, "payment committed: ${summarize(rawText)}")
+        captureHandler.onCommitted(rawText)
+    }
+
+    /** True when the clicked node is GPay's Pay action (text/label "Pay"). */
+    private fun isPayAction(node: AccessibilityNodeInfo): Boolean {
+        val label = node.text?.toString() ?: node.contentDescription?.toString() ?: return false
+        if (!PAY_WORD.containsMatchIn(label)) return false
+        return hasClickableAncestor(node)
+    }
+
+    private fun hasClickableAncestor(node: AccessibilityNodeInfo?): Boolean {
+        var current = node
+        var depth = 0
+        while (current != null && depth < 4) {
+            if (current.isClickable) return true
+            current = current.parent
+            depth++
+        }
+        return false
+    }
 
     /** Concatenate every non-blank label on screen, one per line. */
     private fun collectText(root: AccessibilityNodeInfo?): String? {
@@ -111,40 +159,26 @@ class PaymentAccessibilityService : AccessibilityService() {
         return lower.contains("enter your pin") && (lower.contains("₹") || AMOUNT_REGEX.containsMatchIn(text))
     }
 
-    /** Strip PIN digits and blank lines before logging or shipping the text. */
-    private fun sanitize(text: String): String =
+    /** Strip PIN digits and blank lines before logging. */
+    private fun summarize(text: String): String =
         text.lineSequence()
             .map { it.trim() }
             .filter { it.isNotEmpty() && !DIGIT_ONLY.matches(it) }
-            .joinToString("\n")
-
-    private fun summarize(text: String): String = sanitize(text).replace('\n', ' ')
-
-    private fun fireDeepLink(rawText: String) {
-        val uri = Uri.Builder()
-            .scheme("expensetracker")
-            .authority("add")
-            .appendQueryParameter("bank", "gpay")
-            .appendQueryParameter("data", sanitize(rawText))
-            .build()
-
-        val intent = Intent(Intent.ACTION_VIEW, uri)
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        try {
-            startActivity(intent)
-        } catch (e: Exception) {
-            Log.e(TAG, "failed to fire deep link", e)
-        }
-    }
+            .joinToString(" ")
 
     companion object {
         private const val TAG = "PaymentAccSvc"
+
+        // The live service instance, used to host TYPE_ACCESSIBILITY_OVERLAY
+        // windows (which may only be added by an enabled accessibility service).
+        @Volatile
+        var instance: PaymentAccessibilityService? = null
+            private set
 
         // GPay (India) package name (verified on device).
         private const val GPAY_PACKAGE = "com.google.android.apps.nbu.paisa.user"
 
         private const val CAPTURE_DELAY_MS = 500L
-        private const val COOLDOWN_MS = 10_000L
 
         private val FAILURE_MARKERS = listOf(
             "payment failed",
@@ -154,7 +188,8 @@ class PaymentAccessibilityService : AccessibilityService() {
             "unsuccessful"
         )
 
-        private val AMOUNT_REGEX = Regex("(?:₹|Rs\\.?)\\s?[\\d,]+(?:\\.\\d+)?")
+        private val PAY_WORD = Regex("\\bpay\\b", RegexOption.IGNORE_CASE)
+        private val AMOUNT_REGEX = Regex("(?:₹|Rs\\.?)\\s?([\\d,]+(?:\\.\\d+)?)", RegexOption.IGNORE_CASE)
         private val DIGIT_ONLY = Regex("\\d{4,8}")
     }
 }
