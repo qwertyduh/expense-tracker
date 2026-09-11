@@ -1,12 +1,16 @@
 # UPI Expense Tracker
 
-A personal, local-first mobile expense tracker built with React Native +
-Expo. Its core feature is capturing UPI payment SMS automatically — despite
-iOS blocking apps from reading SMS directly — by routing the message through
-an Apple Shortcuts automation and a custom deep link.
+A personal, local-first mobile expense tracker built with React Native + Expo.
+It captures UPI payments automatically on both platforms, with a different
+mechanism per OS:
 
-Currently iOS-only, single-user, fully local (no backend, no account, no
-internet dependency once installed).
+- **iOS** can't read SMS, so an Apple Shortcuts automation forwards the bank
+  message through a custom deep link (`expensetracker://add?...`).
+- **Android** watches GPay's PIN screen with an AccessibilityService and shows a
+  floating overlay to categorise the payment — the app never has to open.
+
+Single-user, fully local (no backend, no account, no internet dependency once
+installed).
 
 ---
 
@@ -33,16 +37,17 @@ pre-filled.
 - Fully local SQLite storage — nothing leaves your device
 - Activity log of every create/edit/delete action, independent of whether
   the original expense still exists
-- Home Dashboard: recent transactions + a toggleable pie chart
-  (_in progress_)
+- **Android auto-capture:** reads the GPay PIN screen and prompts for category +
+  split in a floating overlay (with Undo/Change) — no app switch
+- Home Dashboard: month spend, spend-by-category pie chart, recent transactions
+- History feed, Category management, Transaction detail (view/edit/delete) and
+  Settings (learned payees + detection controls)
 
 ## Not yet built
 
-- Category Management screen
-- Transactions tab (full list)
-- History tab (UI for the activity log)
-- Transaction Detail (view/edit/delete)
-- Android support (see [Android Track](#android-track) below)
+- Multi-user sync and real "who owes who" settlement
+- Budget alerts, weekly digest, yearly recap
+- Dynamic Island / Live Activity as an alternate iOS trigger
 
 The Apple Shortcut and its Message automation are written up in
 [docs/ios-shortcut-setup.md](docs/ios-shortcut-setup.md), but the automation has
@@ -129,6 +134,11 @@ see `docs/expense-tracker-v1-blueprint.md`.
 git clone <repo-url>
 cd expense-tracker
 npm install
+```
+
+### iOS
+
+```bash
 npx expo prebuild --platform ios
 npx expo run:ios --device --configuration Release
 ```
@@ -139,6 +149,18 @@ no paid Apple Developer Program needed.
 
 To wire up the SMS automation, follow
 [docs/ios-shortcut-setup.md](docs/ios-shortcut-setup.md).
+
+### Android
+
+```bash
+npx expo prebuild -p android
+npx expo run:android
+```
+
+Then enable capture: in the app, **Settings → Payment detection → Enable in
+accessibility settings**, and turn on **"expense-tracker payment reader"**.
+Optionally add the **"Expense capture"** Quick Settings tile to pause/resume
+detection. See [Android Track](#android-track).
 
 ### The deep link contract
 
@@ -155,16 +177,18 @@ expensetracker://add?bank=hdfc&data=<percent-encoded raw SMS text>
 - Nothing is parsed outside `src/parsers/` — the Shortcut is a dumb pipe. New
   SMS formats are a regex change, not a Shortcut change.
 
-Android will reuse this same contract (see [Android Track](#android-track)), so
-treat the query-string shape as stable.
+The Android capture reuses this same contract only as a fallback (if the overlay
+can't be drawn); its primary path is the native accessibility overlay. Treat the
+query-string shape as stable.
 
 ## Day-to-day development
 
 ```bash
-npx expo run:ios --device --configuration Release
+npx expo run:ios --device --configuration Release   # iOS
+npx expo run:android                                # Android
 ```
 
-This installs a release version of the app to your device
+These install a build of the app to your device.
 
 ## Producing a standalone (no-server-needed) build
 
