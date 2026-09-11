@@ -169,7 +169,10 @@ class PaymentCaptureHandler(context: Context) {
         val key = "${parsed.amount}|${parsed.payee}"
         val lastKey = prefs.getString(KEY_LAST, null)
         val lastAt = prefs.getLong(KEY_LAST_AT, 0L)
-        if (key == lastKey && now - lastAt < DEDUPE_WINDOW_MS) return false
+        if (key == lastKey && now - lastAt < DEDUPE_WINDOW_MS) {
+            Log.i(TAG, "duplicate within ${DEDUPE_WINDOW_MS}ms ($key), ignoring")
+            return false
+        }
 
         prefs.edit().putString(KEY_LAST, key).putLong(KEY_LAST_AT, now).apply()
         return true
@@ -212,8 +215,11 @@ class PaymentCaptureHandler(context: Context) {
         private const val PREFS = "payment_detection"
         private const val KEY_LAST = "last_payment_key"
         private const val KEY_LAST_AT = "last_payment_at"
-        private const val COOLDOWN_MS = 3_000L
-        private const val DEDUPE_WINDOW_MS = 5 * 60_000L
+        private const val COOLDOWN_MS = 2_000L
+        // Short window only: enough to absorb duplicate accessibility events for
+        // the SAME payment, but not so long that a second, genuine payment of the
+        // same amount to the same payee gets swallowed.
+        private const val DEDUPE_WINDOW_MS = 10_000L
         private val DIGIT_ONLY = Regex("\\d{4,8}")
     }
 }
