@@ -85,8 +85,8 @@ class PaymentCaptureHandler(context: Context) {
             ?: db.ensureCategory(ExpenseDb.UNSORTED_NAME).id
         val id = db.insertExpense(
             ExpenseDb.NewExpense(total, total, unsortedId, null, payee, sanitize(rawText))
-        )
-        if (id != null) toast("Saved to Unsorted")
+        ) ?: return
+        showSaved(id, total, ExpenseDb.UNSORTED_NAME, 1, payee, rawText)
     }
 
     private fun autoSave(total: Double, payee: String, rawText: String, memory: ExpenseDb.MerchantMemory) {
@@ -102,9 +102,22 @@ class PaymentCaptureHandler(context: Context) {
         db.touchCategory(memory.categoryId)
 
         val categoryName = db.categoryById(memory.categoryId)?.name ?: "Saved"
-        val share = if (splitCount > 1) " \u00B7 your share \u20B9${fmt(selfShare)}" else ""
+        showSaved(id, total, categoryName, splitCount, payee, rawText)
+    }
+
+    /** Shared "saved" confirmation shown after every write, with Undo / Change. */
+    private fun showSaved(
+        id: String,
+        amount: Double,
+        categoryName: String,
+        splitCount: Int,
+        payee: String?,
+        rawText: String
+    ) {
+        val share = if (splitCount > 1) " \u00B7 your share \u20B9${fmt(amount / splitCount)}" else ""
+        val who = if (payee != null) " ($payee)" else ""
         snackbar().show(
-            "Added \u20B9${fmt(total)} \u00B7 $categoryName ($payee)$share",
+            "Added \u20B9${fmt(amount)} \u00B7 $categoryName$who$share",
             listOf(
                 "Undo" to {
                     db.deleteExpense(id)
@@ -112,7 +125,7 @@ class PaymentCaptureHandler(context: Context) {
                 },
                 "Change" to {
                     db.deleteExpense(id)
-                    showOverlay(total, payee, rawText)
+                    showOverlay(amount, payee, rawText)
                 }
             )
         )
@@ -134,16 +147,16 @@ class PaymentCaptureHandler(context: Context) {
                     overlay = null
                     val category = db.ensureCategory(categoryName)
                     val selfShare = amount / splitCount
-                    db.insertExpense(
+                    val id = db.insertExpense(
                         ExpenseDb.NewExpense(amount, selfShare, category.id, null, payee, sanitize(rawText))
-                    )
+                    ) ?: return
                     db.touchCategory(category.id)
                     // Only learn when auto-filing is on; "always ask" must never
                     // start pre-filling later choices.
                     if (payee != null && PaymentPrefs.mode(appContext) != PaymentPrefs.MODE_ASK) {
                         db.rememberMerchant(payee, category.id, splitCount)
                     }
-                    toast("Saved to ${category.name}")
+                    showSaved(id, amount, category.name, splitCount, payee, rawText)
                 }
 
                 override fun onTimedOut() {
