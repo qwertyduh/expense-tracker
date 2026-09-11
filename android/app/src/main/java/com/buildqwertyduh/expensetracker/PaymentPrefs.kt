@@ -14,10 +14,10 @@ object PaymentPrefs {
     private const val KEY_ENABLED = "detection_enabled"
     private const val KEY_MODE = "detection_mode"
 
-    /** Auto-file known payees, ask for new ones (default). */
+    /** Auto-file known payees, ask for new ones. */
     const val MODE_AUTO = "auto"
 
-    /** Always show the card, even for known payees. */
+    /** Always show the card, even for known payees (default). */
     const val MODE_ASK = "ask"
 
     /** Never ask: known payees use memory, unknown payees go to Unsorted. */
@@ -31,7 +31,7 @@ object PaymentPrefs {
     }
 
     fun mode(context: Context): String =
-        prefs(context).getString(KEY_MODE, MODE_AUTO) ?: MODE_AUTO
+        prefs(context).getString(KEY_MODE, MODE_ASK) ?: MODE_ASK
 
     fun setMode(context: Context, mode: String) {
         prefs(context).edit().putString(KEY_MODE, mode).apply()

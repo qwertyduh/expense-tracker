@@ -67,9 +67,14 @@ class PaymentAccessibilityService : AccessibilityService() {
             }
 
             AccessibilityEvent.TYPE_VIEW_CLICKED -> {
-                val node = ev.source ?: return
-                if (isPayAction(node)) {
-                    Log.i(TAG, "Pay action clicked")
+                val label = buildString {
+                    ev.text?.joinToString(" ")?.let { append(it) }
+                    ev.contentDescription?.let { if (isNotEmpty()) append(' '); append(it) }
+                }
+                val node = ev.source
+                Log.d(TAG, "click class=${ev.className} label='$label'")
+                if (PAY_WORD.containsMatchIn(label) || isPayAction(node)) {
+                    Log.i(TAG, "Pay action clicked (label='$label')")
                     payClicked = true
                     // The PIN screen text (amount + payee) is already held.
                     commitPending()
@@ -98,7 +103,18 @@ class PaymentAccessibilityService : AccessibilityService() {
         }
 
         if (!payClicked) {
-            Log.i(TAG, "left PIN screen without a Pay click, discarding")
+            // The success screen is FLAG_SECURE, so rootInActiveWindow reads back
+            // as null/empty. Leaving the PIN screen straight into that secure
+            // screen is a strong "payment went through" signal even when we
+            // didn't catch the Pay tap itself.
+            val secureOrSuccess = text.isEmpty() ||
+                SUCCESS_MARKERS.any { text.lowercase(Locale.US).contains(it) }
+            if (secureOrSuccess) {
+                Log.i(TAG, "PIN screen left for a secure/success screen, committing")
+                commit(held)
+                return
+            }
+            Log.i(TAG, "left PIN screen without a Pay click, discarding (text='${summarize(text)}')")
             return
         }
 
@@ -118,20 +134,16 @@ class PaymentAccessibilityService : AccessibilityService() {
         captureHandler.onCommitted(rawText)
     }
 
-    /** True when the clicked node is GPay's Pay action (text/label "Pay"). */
-    private fun isPayAction(node: AccessibilityNodeInfo): Boolean {
-        val label = node.text?.toString() ?: node.contentDescription?.toString() ?: return false
-        if (!PAY_WORD.containsMatchIn(label)) return false
-        return hasClickableAncestor(node)
-    }
+    /** True when the clicked node (or a descendant) is GPay's Pay action. */
+    private fun isPayAction(node: AccessibilityNodeInfo?): Boolean =
+        subtreeContainsPay(node, 0)
 
-    private fun hasClickableAncestor(node: AccessibilityNodeInfo?): Boolean {
-        var current = node
-        var depth = 0
-        while (current != null && depth < 4) {
-            if (current.isClickable) return true
-            current = current.parent
-            depth++
+    private fun subtreeContainsPay(node: AccessibilityNodeInfo?, depth: Int): Boolean {
+        if (node == null || depth > 4) return false
+        val labels = listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
+        if (labels.any { PAY_WORD.containsMatchIn(it) }) return true
+        for (i in 0 until node.childCount) {
+            if (subtreeContainsPay(node.getChild(i), depth + 1)) return true
         }
         return false
     }
@@ -186,6 +198,17 @@ class PaymentAccessibilityService : AccessibilityService() {
             "failed",
             "declined",
             "unsuccessful"
+        )
+
+        private val SUCCESS_MARKERS = listOf(
+            "paid to",
+            "you paid",
+            "payment successful",
+            "payment was successful",
+            "successful",
+            "success",
+            "sent to",
+            "completed"
         )
 
         private val PAY_WORD = Regex("\\bpay\\b", RegexOption.IGNORE_CASE)

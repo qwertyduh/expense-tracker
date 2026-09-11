@@ -138,7 +138,11 @@ class PaymentCaptureHandler(context: Context) {
                         ExpenseDb.NewExpense(amount, selfShare, category.id, null, payee, sanitize(rawText))
                     )
                     db.touchCategory(category.id)
-                    if (payee != null) db.rememberMerchant(payee, category.id, splitCount)
+                    // Only learn when auto-filing is on; "always ask" must never
+                    // start pre-filling later choices.
+                    if (payee != null && PaymentPrefs.mode(appContext) != PaymentPrefs.MODE_ASK) {
+                        db.rememberMerchant(payee, category.id, splitCount)
+                    }
                     toast("Saved to ${category.name}")
                 }
 

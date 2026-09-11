@@ -10,7 +10,12 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { Screen, ScreenHeader } from '@/components/ui/screen';
 import { ThemedText } from '@/components/themed-text';
 import { Radius, Spacing } from '@/constants/theme';
-import { forgetMerchant, listMerchantMemory, type MerchantMemoryRow } from '@/db/merchant-memory';
+import {
+  clearMerchantMemory,
+  forgetMerchant,
+  listMerchantMemory,
+  type MerchantMemoryRow,
+} from '@/db/merchant-memory';
 import { getSelf, updateSelfName } from '@/db/people';
 import { paymentDetection, type DetectionMode } from '@/lib/payment-detection';
 import { useTheme } from '@/hooks/use-theme';
@@ -84,6 +89,20 @@ export default function SettingsScreen() {
     ]);
   };
 
+  const resetMemory = () => {
+    Alert.alert('Reset learned payees?', 'All remembered payee → category mappings will be cleared.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Reset',
+        style: 'destructive',
+        onPress: () => {
+          clearMerchantMemory();
+          reload();
+        },
+      },
+    ]);
+  };
+
   const activeMode = MODES.find((m) => m.value === mode);
 
   return (
@@ -150,9 +169,16 @@ export default function SettingsScreen() {
         </Card>
       ) : null}
 
-      <ThemedText type="smallBold" style={styles.sectionTitle}>
-        Learned payees
-      </ThemedText>
+      <View style={styles.sectionHeader}>
+        <ThemedText type="smallBold">Learned payees</ThemedText>
+        {memory.length > 0 ? (
+          <Pressable onPress={resetMemory} hitSlop={8}>
+            <ThemedText type="small" style={{ color: theme.danger }}>
+              Reset all
+            </ThemedText>
+          </Pressable>
+        ) : null}
+      </View>
       {memory.length === 0 ? (
         <EmptyState
           title="Nothing learned yet"
@@ -229,7 +255,10 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: Spacing.two,
   },
-  sectionTitle: {
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     marginTop: Spacing.two,
   },
   listCard: {

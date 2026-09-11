@@ -22,3 +22,7 @@ export function listMerchantMemory(): MerchantMemoryRow[] {
 export function forgetMerchant(merchant: string): void {
   db.runSync('DELETE FROM merchant_memory WHERE merchant = ?', merchant);
 }
+
+export function clearMerchantMemory(): void {
+  db.runSync('DELETE FROM merchant_memory');
+}
