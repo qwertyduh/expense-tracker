@@ -7,7 +7,7 @@ a **Message automation** in Shortcuts builds a deep link and opens it.
 bank SMS arrives
    → Message automation fires (no confirmation tap)
    → Shortcut URL-encodes the message body
-   → builds expensetracker://add?bank=hdfc&data=<encoded text>
+   → builds expensetracker://add?data=<encoded text>
    → Open URLs launches the app
    → app parses the text, opens Add Expense pre-filled
 ```
@@ -32,7 +32,7 @@ breaks you know which half is at fault:
 
 ```bash
 # Booted simulator — adjust the bundle id if you changed it.
-xcrun simctl openurl booted "expensetracker://add?bank=hdfc&data=$(python3 -c \
+xcrun simctl openurl booted "expensetracker://add?data=$(python3 -c \
   'import urllib.parse; print(urllib.parse.quote("Spent Rs.49 From HDFC Bank Card x1234 At HAIER APPLIANCES INDIA On 2026-08-10:09:17:38. Get 5% cashback. Call +919876543210"))')"
 ```
 
@@ -72,7 +72,7 @@ can survive inside a URL instead of terminating the query string early.
 Add **Text** and type exactly:
 
 ```
-expensetracker://add?bank=hdfc&data=
+expensetracker://add?data=
 ```
 
 then, **without a space after the `=`**, insert the `URL Encoded Text` variable
@@ -80,9 +80,6 @@ from the variable bar above the keyboard.
 
 Do **not** put the whole assembled string through `URL Encode` — that would
 encode the `://`, `?` and `&` and produce a URL the app cannot route.
-
-`bank=hdfc` must stay lowercase; it is matched against the `BankSource` union in
-`src/parsers/types.ts`.
 
 ### 1c. Open URLs
 
@@ -179,7 +176,7 @@ there.
 | --- | --- | --- |
 | App never opens | Scheme typo, or the automation is not firing | Re-check `expensetracker://` spelling; re-check **Run Immediately** (§3) |
 | App opens, but Add Expense has no raw text and no amount | `data` param is empty or the `Text` action is missing the encoded variable | Re-do §1b — the variable must sit immediately after `data=` |
-| App opens, raw text shows at top, but amount/merchant are blank | The app worked; `parseSms` did not match this SMS shape | Add or widen a regex in `src/parsers/hdfc.ts`, then rebuild |
+| App opens, raw text shows at top, but amount/merchant are blank | The app worked; universal parser did not match this SMS shape | Add or widen a regex in `src/parsers/sms.ts`, then rebuild |
 | Worked, then stopped after an iOS update | Run Immediately reverted | Re-enable it in the automation |
 | Nothing at all, ever | Filter never matches | Loosen to `Message Contains` → `Rs.`; remember filters are ANDed |
 | Add sheet opens for SMS you did not want | Filter is too broad | Narrow with a Sender filter, or add a second condition |
@@ -206,17 +203,12 @@ and the raw text before anything is written to the database.
 
 ---
 
-## 6. Adding a second bank
+## 6. Adding a new bank format
 
-Four places, all in code — the Shortcut only changes its `bank=` value:
+The universal parser in `src/parsers/sms.ts` handles all banks with `Rs.` or `₹` patterns.
+To add a new format:
 
-1. `src/parsers/types.ts` — add the identifier to the `BankSource` union.
-2. `src/parsers/<bank>.ts` — new parser, returning `ParsedTransaction`.
-3. `src/parsers/index.ts` — add a case to `parseSms`.
-4. `src/hooks/useAddExpenseIntent.ts` — add it to `KNOWN_BANKS` (this only
-   affects the dev warning; the dispatcher already tolerates unknown banks).
+1. Add amount/merchant regex patterns to `AMOUNT_PATTERNS` / `MERCHANT_PATTERNS` in `src/parsers/sms.ts`.
+2. Add bank hint keyword to `detectBankHint()` if you want it identified in logs.
 
-Then duplicate the automation with `bank=<new-bank>` and its own filter.
-
-Per the contribution convention in the README, `android-sms/` will reuse this
-exact deep-link contract, so keep the query-string shape stable.
+No Shortcut changes needed — the same automation works for all banks.

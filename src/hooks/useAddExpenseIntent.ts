@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import * as Linking from 'expo-linking';
-import { parseSms, BankSource, ParsedTransaction } from '../parsers';
+import { parseAnySms, BankSource, ParsedTransaction } from '../parsers';
 
 export type AddExpenseIntent =
   | { source: 'manual'; prefill: null }
@@ -10,8 +10,6 @@ export type AddExpenseIntent =
       prefill: ParsedTransaction;
       rawText: string;
     };
-
-const KNOWN_BANKS: readonly BankSource[] = ['hdfc'];
 
 // Reads one query param out of a raw deep link, percent-decoding it exactly once.
 //
@@ -73,31 +71,21 @@ export function useAddExpenseIntent(): {
 
   function handleUrl(url: string) {
     // Expected shape:
-    //   expensetracker://add?bank=hdfc&data=<percent-encoded raw SMS text>
+    //   expensetracker://add?data=<percent-encoded raw SMS text>
     const rawText = readQueryParam(url, 'data');
-    const bank = readQueryParam(url, 'bank')?.toLowerCase();
 
-    if (!rawText || !bank) {
+    if (!rawText) {
       if (__DEV__) {
         console.warn(
-          `[deep-link] Ignored "${url}" — expected ?bank=<bank>&data=<text>. ` +
+          `[deep-link] Ignored "${url}" — expected ?data=<text>. ` +
             'Check the Shortcut is URL-encoding the message and using scheme "expensetracker".'
         );
       }
       return;
     }
 
-    if (!KNOWN_BANKS.includes(bank as BankSource)) {
-      if (__DEV__) {
-        console.warn(
-          `[deep-link] Unknown bank "${bank}". Known: ${KNOWN_BANKS.join(', ')}. ` +
-            'Opens with the raw text and blank fields.'
-        );
-      }
-    }
-
-    const bankSource = bank as BankSource;
-    const prefill = parseSms(bankSource, rawText);
+    const prefill = parseAnySms(rawText);
+    const bankSource = prefill.bankSource ?? 'unknown';
 
     setIntent({ source: 'sms', bankSource, prefill, rawText });
   }

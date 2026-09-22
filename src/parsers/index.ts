@@ -1,6 +1,8 @@
 import { BankSource, ParsedTransaction } from './types';
 import { parseHdfcSms } from './hdfc';
 import { parseGpay } from './gpay';
+import { parseFamAppSms } from './fampapp';
+import { parseAnySms } from './sms';
 
 export function parseSms(bankSource: BankSource, raw: string): ParsedTransaction {
   switch (bankSource) {
@@ -8,9 +10,9 @@ export function parseSms(bankSource: BankSource, raw: string): ParsedTransaction
       return parseHdfcSms(raw);
     case 'gpay':
       return parseGpay(raw);
+    case 'fampapp':
+      return parseFamAppSms(raw);
     default:
-      // Should be unreachable given the BankSource union, but keeps the
-      // dispatcher safe if it's ever called with an unexpected value.
       return {
         amount: null,
         merchant: null,
@@ -21,4 +23,5 @@ export function parseSms(bankSource: BankSource, raw: string): ParsedTransaction
   }
 }
 
+export { parseAnySms };
 export * from './types';
