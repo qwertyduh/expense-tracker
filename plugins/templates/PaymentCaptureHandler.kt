@@ -218,7 +218,6 @@ class PaymentCaptureHandler(context: Context) {
         val uri = Uri.Builder()
             .scheme("expensetracker")
             .authority("add")
-            .appendQueryParameter("bank", "gpay")
             .appendQueryParameter("data", sanitize(rawText))
             .build()
         val intent = Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

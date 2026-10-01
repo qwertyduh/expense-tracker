@@ -71,7 +71,9 @@ export default function AddScreen() {
       source: smsIntent ? "sms" : "manual",
       bankSource: smsIntent ? smsIntent.bankSource : null,
       rawSmsText: smsIntent ? smsIntent.rawText : null,
-      occurredAt: new Date().toISOString(),
+      // The SMS carries its own date; fall back to the save time when it had
+      // none (manual entry, or a message with an unusable date).
+      occurredAt: smsIntent?.prefill.occurredAt ?? new Date().toISOString(),
     });
   };
 

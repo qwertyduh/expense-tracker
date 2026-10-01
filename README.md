@@ -18,11 +18,11 @@ installed).
 
 A UPI/card debit SMS arrives from your bank → an Apple Shortcuts automation
 captures the raw text (no parsing done in the Shortcut) → it opens
-`expensetracker://add?bank=hdfc&data=<url-encoded raw text>` → the app
-launches or foregrounds, parses the message with a bank-specific regex
-parser, and opens the Add Expense flow pre-filled with the amount/merchant/
-date. You can also add expenses manually via the same flow, with nothing
-pre-filled.
+`expensetracker://add?data=<url-encoded raw text>` → the app launches or
+foregrounds, parses the message with one shared regex parser, and opens the Add
+Expense flow pre-filled with the amount and merchant. The bank is detected from
+the text and stored as a label, not used to pick a parser. You can also add
+expenses manually via the same flow, with nothing pre-filled.
 
 ---
 
@@ -110,10 +110,10 @@ src/
 │   ├── format.ts            → currency / date formatting
 │   └── payment-detection.ts → JS bridge to the Android capture module
 └── parsers/
-    ├── types.ts            → ParsedTransaction interface
-    ├── hdfc.ts              → HDFC UPI + Card SMS regex parsing
-    ├── gpay.ts              → GPay PIN-screen parsing (Android capture)
-    └── index.ts              → parseSms(bank, text) dispatcher
+    ├── types.ts            → ParsedTransaction interface + BankSource
+    ├── sms.ts               → parseAnySms(), the single parser for all banks
+    ├── gpay.ts              → parseGpay(), GPay PIN-screen text (Android capture)
+    └── index.ts             → re-exports only, no dispatch
 
 plugins/                     → Android config plugin + native Kotlin templates
 ```
@@ -167,11 +167,12 @@ detection. See [Android Track](#android-track).
 The one interface between the Shortcut and the app:
 
 ```
-expensetracker://add?bank=hdfc&data=<percent-encoded raw SMS text>
+expensetracker://add?data=<percent-encoded raw SMS text>
 ```
 
-- `bank` is matched against `BankSource` in `src/parsers/types.ts`; unrecognised
-  values still open the flow with the raw text and blank fields.
+- `data` is the only parameter. The bank is detected from the message text by
+  `detectBankHint()` in `src/parsers/sms.ts` and stored in the `bank_source`
+  column as a label.
 - `data` must be percent-encoded (`encodeURIComponent` semantics). A literal `+`
   is preserved, not read as a space.
 - Nothing is parsed outside `src/parsers/` — the Shortcut is a dumb pipe. New

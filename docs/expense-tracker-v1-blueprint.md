@@ -158,7 +158,7 @@ centralized hook so there's exactly one code path to test, not two:
 ```
 useAddExpenseIntent()
  ├─ manual open → { source: 'manual', prefill: null }
- └─ deep link open → { source: 'sms', bankSource: 'hdfc', prefill: parseSms('hdfc', rawText), rawText }
+ └─ deep link open → { source: 'sms', bankSource: prefill.bankSource, prefill: parseAnySms(rawText), rawText }
 ```
 
 Both cold-start and warm-start deep links funnel through Expo Router's linking
@@ -175,11 +175,19 @@ their format) never touches the rest of the app or the schema — see §1, where
 
 ```
 /parsers
-  ├─ types.ts          → shared ParsedTransaction interface
-  ├─ hdfc.ts            → HDFC-specific regex + parseHdfcSms()
-  └─ index.ts           → parseSms(bankSource, rawText) dispatches by bank
-                           identifier (only 'hdfc' registered for now)
+  ├─ types.ts          → shared ParsedTransaction interface + BankSource
+  ├─ sms.ts            → parseAnySms(), the single parser for every bank
+  ├─ gpay.ts           → parseGpay(), Android Accessibility screen capture
+  └─ index.ts          → re-exports only, no dispatch
 ```
+
+> **Superseded (Sept 2026).** This section originally specified a per-bank
+> `hdfc.ts` dispatched on `bankSource`, and a `parseSms(bankSource, rawText)`
+> dispatcher in `index.ts`. Both are gone. The per-bank parsers were redundant —
+> `parseAnySms` matches the same shapes — and the dispatcher was never reached,
+> since the only caller invoked `parseAnySms` directly. The bank is now an
+> *attribute* of a message (`detectBankHint` in `sms.ts`), stored in
+> `bank_source`. See `docs/ios-shortcut-setup.md` §6.
 
 ```ts
 // types.ts
@@ -189,18 +197,25 @@ export interface ParsedTransaction {
   occurredAt: string | null; // ISO string, null if unparseable
   raw: string;
   parseSucceeded: boolean;
+  bankSource?: string;       // detected label: 'hdfc' | 'fampapp' | 'gpay' | 'unknown'
 }
 ```
+
+`occurredAt` is always `null` in practice — no parser extracts a date, and
+`add.tsx` stamps the expense with `new Date()` at confirm time. The field is kept
+so a date-extracting pattern can be added without a schema change.
 
 **Fallback behavior (your chosen option A):** if `parseSucceeded` is false, Add
 Expense still opens, with the raw SMS text shown at the top for reference and
 every field left empty for manual fill-in. Nothing is silently lost.
 
 **Getting real regex data:** you mentioned asking someone to re-send old HDFC
-transaction texts — do that before we write `hdfc.ts`. We need actual sample
-messages (debit, credit if relevant, and any variant formats HDFC uses — UPI vs
-POS vs ATM wording often differs even within one bank) to build the regex
-against real strings rather than guessed ones.
+transaction texts — that already paid off, and the samples now live in
+`src/parsers/__tests__/sms.test.ts`. When adding a new bank, collect actual
+messages first (debit, credit if relevant, and any variant formats that bank
+uses — UPI vs POS vs ATM wording often differs even within one bank) and add them
+as test cases before writing the pattern, so the regex is built against real
+strings rather than guessed ones.
 
 ---
 

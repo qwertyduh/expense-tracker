@@ -12,9 +12,30 @@ bank SMS arrives
    → app parses the text, opens Add Expense pre-filled
 ```
 
-Nothing is parsed inside the Shortcut. It is a dumb pipe — all parsing lives in
-`src/parsers/`, so a new bank's message format is a code change, not a new
-Shortcut.
+Nothing is parsed inside the Shortcut. It is a dumb pipe, so a new bank's message
+format is a code change, not a new Shortcut.
+
+### Where the parsing actually happens
+
+One parser handles every bank SMS: `parseAnySms()` in `src/parsers/sms.ts`.
+The full path, in order:
+
+| Step | Code | Result |
+| --- | --- | --- |
+| Deep link arrives | `useAddExpenseIntent` (`src/hooks/useAddExpenseIntent.ts`) | Pulls `?data=` off the raw URL and percent-decodes it **once** |
+| Parse | `parseAnySms(rawText)` | Fills `amount`, `merchant`, `bankSource` |
+| Route | `AddExpenseIntentProvider` | Navigates to `/add` from wherever the app was |
+| Save | `add.tsx` | Writes `merchant`, `bank_source`, `raw_sms_text` |
+
+Two details worth knowing before you debug anything:
+
+- **`bankSource` is a label, not a parser.** `detectBankHint()` in `sms.ts` scans
+  the text for `HDFC` / `FamApp` / `GPay` and returns a string that gets stored in
+  the `bank_source` column. It does *not* select a different parser — see §6.
+  There is no `bank=` query parameter; `data=` is the whole contract.
+- **The SMS timestamp is discarded.** `parseAnySms` does not extract a date, and
+  `add.tsx` writes `occurredAt: new Date().toISOString()`, so every expense is
+  stamped with its capture time, not the time of the transaction.
 
 This covers **one person's phone**. An automation cannot be exported, AirDropped
 or shared — everyone sets up their own by hand. Only the Shortcut itself (§1) is
@@ -176,7 +197,7 @@ there.
 | --- | --- | --- |
 | App never opens | Scheme typo, or the automation is not firing | Re-check `expensetracker://` spelling; re-check **Run Immediately** (§3) |
 | App opens, but Add Expense has no raw text and no amount | `data` param is empty or the `Text` action is missing the encoded variable | Re-do §1b — the variable must sit immediately after `data=` |
-| App opens, raw text shows at top, but amount/merchant are blank | The app worked; universal parser did not match this SMS shape | Add or widen a regex in `src/parsers/sms.ts`, then rebuild |
+| App opens, raw text shows at top, but amount/merchant are blank | The app worked; `parseAnySms` did not match this SMS shape | Add or widen a regex in `src/parsers/sms.ts` (§6), then rebuild |
 | Worked, then stopped after an iOS update | Run Immediately reverted | Re-enable it in the automation |
 | Nothing at all, ever | Filter never matches | Loosen to `Message Contains` → `Rs.`; remember filters are ANDed |
 | Add sheet opens for SMS you did not want | Filter is too broad | Narrow with a Sender filter, or add a second condition |
@@ -205,10 +226,30 @@ and the raw text before anything is written to the database.
 
 ## 6. Adding a new bank format
 
-The universal parser in `src/parsers/sms.ts` handles all banks with `Rs.` or `₹` patterns.
+**One parser, all banks.** There is no per-bank parser and you should not add
+one. `parseAnySms()` in `src/parsers/sms.ts` is the single entry point for SMS
+from every bank, and it works by trying an ordered list of regexes.
+
+> This replaced per-bank parser files (`hdfc.ts`, `fampapp.ts`) that used to be
+> dispatched on `bankSource`. They were redundant — they matched the same shapes
+> with the same patterns — and have been deleted, along with the `parseSms()`
+> dispatcher in `src/parsers/index.ts`. `parseGpay()` remains exported for the
+> Android Accessibility Service's dump of the GPay "Enter your PIN" screen; it is
+> a screen-text parser, not an SMS parser, so it is deliberately *not* on this
+> path. `parseAnySms`'s patterns happen to cover GPay screen text too, so an
+> Android deep link still pre-fills correctly.
+
 To add a new format:
 
-1. Add amount/merchant regex patterns to `AMOUNT_PATTERNS` / `MERCHANT_PATTERNS` in `src/parsers/sms.ts`.
-2. Add bank hint keyword to `detectBankHint()` if you want it identified in logs.
+1. Add amount/merchant regex patterns to `AMOUNT_PATTERNS` / `MERCHANT_PATTERNS`
+   in `src/parsers/sms.ts`. **Order matters** — the first regex that matches
+   wins, so put the most specific pattern above the general `Rs.`/`₹` fallbacks
+   at the bottom of each list.
+2. Add a keyword to `detectBankHint()` if you want the row labelled with that
+   bank in `bank_source`. This is cosmetic only; it changes no parsing.
+3. Check the Shortcut filter still matches. The automation in §2 filters on
+   `Message Contains: Rs.`, so a bank that never writes `Rs.` (or `₹`) will not
+   reach the parser at all until that filter is widened.
 
-No Shortcut changes needed — the same automation works for all banks.
+No Shortcut changes are needed for a new bank that uses standard `Rs.`/`₹`
+wording — the same automation covers them.
