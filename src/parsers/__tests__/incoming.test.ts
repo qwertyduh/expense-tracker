@@ -53,6 +53,17 @@ describe('parseIncomingSms', () => {
     const result = parseIncomingSms('Rs.500 received from Anushka Gupta On 28/08/26', now);
     expect(result.occurredAt).toBe(new Date(2026, 7, 28, 15, 0, 0).toISOString());
   });
+
+  it('extracts the UPI id when the sender is a VPA', () => {
+    const result = parseIncomingSms('Rs.500 received from anushka@okhdfc');
+    expect(result.amount).toBe(500);
+    expect(result.upiId).toBe('anushka@okhdfc');
+    expect(result.senderName).toBeNull();
+  });
+
+  it('leaves upiId null when there is no VPA', () => {
+    expect(parseIncomingSms('Rs.500 received from Anushka Gupta').upiId).toBeNull();
+  });
 });
 
 // parseAnySms sits on the debit side of the gate. The credit-side parser must

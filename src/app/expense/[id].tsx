@@ -144,7 +144,6 @@ export default function ExpenseDetailScreen() {
         title={expense.merchant ?? expense.label ?? 'Expense'}
         subtitle={formatDateTime(expense.occurred_at)}
       />
-
       {!editing ? (
         <>
           <Card>
@@ -227,6 +226,7 @@ export default function ExpenseDetailScreen() {
             value={total}
             onChangeText={setTotal}
             keyboardType="decimal-pad"
+            inputAccessoryViewButtonLabel="Done"
             style={inputStyle}
           />
 
@@ -235,6 +235,7 @@ export default function ExpenseDetailScreen() {
             value={share}
             onChangeText={setShare}
             keyboardType="decimal-pad"
+            inputAccessoryViewButtonLabel="Done"
             style={inputStyle}
           />
 
@@ -248,12 +249,14 @@ export default function ExpenseDetailScreen() {
                     onChangeText={(value) => editParticipantName(index, value)}
                     placeholder="Name"
                     placeholderTextColor={theme.textSecondary}
+                    inputAccessoryViewButtonLabel="Done"
                     style={[inputStyle, styles.participantName]}
                   />
                   <TextInput
                     value={person.shareAmount}
                     onChangeText={(value) => editParticipantShare(index, value)}
                     keyboardType="decimal-pad"
+                    inputAccessoryViewButtonLabel="Done"
                     style={[inputStyle, styles.participantShare]}
                   />
                 </View>
@@ -262,10 +265,20 @@ export default function ExpenseDetailScreen() {
           )}
 
           <ThemedText type="smallBold">Label</ThemedText>
-          <TextInput value={label} onChangeText={setLabel} style={inputStyle} />
+          <TextInput
+            value={label}
+            onChangeText={setLabel}
+            inputAccessoryViewButtonLabel="Done"
+            style={inputStyle}
+          />
 
           <ThemedText type="smallBold">Merchant</ThemedText>
-          <TextInput value={merchant} onChangeText={setMerchant} style={inputStyle} />
+          <TextInput
+            value={merchant}
+            onChangeText={setMerchant}
+            inputAccessoryViewButtonLabel="Done"
+            style={inputStyle}
+          />
 
           <View style={styles.actions}>
             <Button title="Cancel" variant="ghost" onPress={() => setEditing(false)} style={styles.action} />

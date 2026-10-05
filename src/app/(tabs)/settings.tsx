@@ -17,6 +17,7 @@ import {
   type MerchantMemoryRow,
 } from '@/db/merchant-memory';
 import { getSelf, updateSelfName } from '@/db/people';
+import { forgetUpiAlias, listUpiAliases, type UpiAliasRow } from '@/db/upi-aliases';
 import { paymentDetection, type DetectionMode } from '@/lib/payment-detection';
 import { useTheme } from '@/hooks/use-theme';
 
@@ -30,6 +31,7 @@ export default function SettingsScreen() {
   const theme = useTheme();
   const [selfName, setSelfName] = useState('');
   const [memory, setMemory] = useState<MerchantMemoryRow[]>([]);
+  const [upiAliases, setUpiAliases] = useState<UpiAliasRow[]>([]);
   const [editorOpen, setEditorOpen] = useState(false);
   const [draft, setDraft] = useState('');
   const [detectionEnabled, setDetectionEnabled] = useState(true);
@@ -39,6 +41,7 @@ export default function SettingsScreen() {
   const reload = useCallback(() => {
     setSelfName(getSelf()?.display_name ?? '');
     setMemory(listMerchantMemory());
+    setUpiAliases(listUpiAliases());
     if (paymentDetection.available) {
       paymentDetection.isEnabled().then(setDetectionEnabled).catch(() => {});
       paymentDetection.getMode().then(setMode).catch(() => {});
@@ -83,6 +86,20 @@ export default function SettingsScreen() {
         style: 'destructive',
         onPress: () => {
           forgetMerchant(merchant);
+          reload();
+        },
+      },
+    ]);
+  };
+
+  const forgetAlias = (upiId: string) => {
+    Alert.alert(`Forget "${upiId}"?`, 'The next payment from it will ask for a name.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Forget',
+        style: 'destructive',
+        onPress: () => {
+          forgetUpiAlias(upiId);
           reload();
         },
       },
@@ -205,6 +222,34 @@ export default function SettingsScreen() {
         </Card>
       )}
 
+      <View style={styles.sectionHeader}>
+        <ThemedText type="smallBold">UPI names</ThemedText>
+      </View>
+      {upiAliases.length === 0 ? (
+        <EmptyState
+          title="No UPI names yet"
+          subtitle="Name a sender once and their UPI id is remembered for next time."
+        />
+      ) : (
+        <Card style={styles.listCard}>
+          {upiAliases.map((alias) => (
+            <View key={alias.upi_id} style={[styles.row, { borderColor: theme.border }]}>
+              <View style={styles.rowMain}>
+                <ThemedText type="default">{alias.person_name ?? 'Unknown'}</ThemedText>
+                <ThemedText type="small" themeColor="textSecondary">
+                  {alias.upi_id}
+                </ThemedText>
+              </View>
+              <Pressable onPress={() => forgetAlias(alias.upi_id)} hitSlop={8}>
+                <ThemedText type="small" style={{ color: theme.danger }}>
+                  Forget
+                </ThemedText>
+              </Pressable>
+            </View>
+          ))}
+        </Card>
+      )}
+
       <Card>
         <ThemedText type="small" themeColor="textSecondary">
           Expense Tracker · local-only, single user. All data stays on this device.
@@ -221,6 +266,7 @@ export default function SettingsScreen() {
               autoFocus
               placeholder="Name"
               placeholderTextColor={theme.textSecondary}
+              inputAccessoryViewButtonLabel="Done"
               style={[
                 styles.input,
                 { color: theme.text, backgroundColor: theme.background, borderColor: theme.border },

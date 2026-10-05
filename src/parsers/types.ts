@@ -10,6 +10,8 @@ export interface ParsedTransaction {
 export interface ParsedIncoming {
   amount: number | null;
   senderName: string | null;
+  /** UPI id (VPA) the money came from, e.g. "anushka@okhdfc"; null when absent. */
+  upiId: string | null;
   occurredAt: string | null; // ISO
   raw: string;
   parseSucceeded: boolean;

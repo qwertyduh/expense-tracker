@@ -32,6 +32,7 @@ export function LabelSlide({ value, onChangeLabel }: LabelSlideProps) {
           placeholderTextColor={theme.textSecondary}
           autoCapitalize="sentences"
           autoFocus
+          inputAccessoryViewButtonLabel="Done"
           accessibilityLabel="Label"
         />
       </View>

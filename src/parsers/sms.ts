@@ -48,6 +48,10 @@ const SENDER_NAME_PATTERNS = [
   /\bby\s+([A-Za-z][A-Za-z '-]*?)(?=\s+(?:on|by|with|ref|via|to|for|at)\b|[.,;\n]|$)/i,
 ] as const;
 
+// A UPI id / VPA: "anushka@okhdfc", "9876543210@ybl". Used to key the alias
+// cache so a raw VPA can resolve to a saved person name.
+const UPI_ID_REGEX = /[A-Za-z0-9._%+-]+@[A-Za-z]{2,}/;
+
 const MERCHANT_PATTERNS = [
   /To\s+([^\n,]+?)\s+with\s+txn\s+ID/i,
   /To\s+([^\n]+?)\s+(?:\n\s*)?On/i,
@@ -205,9 +209,12 @@ export function parseIncomingSms(raw: string, now: Date = new Date()): ParsedInc
     }
   }
 
+  const upiId = text.match(UPI_ID_REGEX)?.[0] ?? null;
+
   return {
     amount,
     senderName,
+    upiId,
     occurredAt: parseOccurredAt(text, now),
     raw: text,
     parseSucceeded: amount !== null,

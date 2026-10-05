@@ -79,3 +79,31 @@ export function resplitEvenly(totalAmount: number, partyCount: number): number[]
   sharesCents[partyCount - 1] += remainder;
   return sharesCents.map((cents) => Math.round(cents) / 100);
 }
+
+export type Allocation = { expenseId: string; amount: number };
+
+// Pays a received amount across one or more shares, OLDEST first, taking at most
+// each share's remaining balance. Any amount left over after every share is
+// covered is returned as `unallocated` so the caller can surface it rather than
+// silently inventing a matching debt.
+export function allocateGreedy(
+  candidates: MatchCandidate[],
+  amount: number
+): { allocations: Allocation[]; unallocated: number } {
+  const ordered = [...candidates].sort(
+    (a, b) => new Date(a.occurredAt).getTime() - new Date(b.occurredAt).getTime()
+  );
+
+  let left = Math.round(Math.max(0, amount) * 100) / 100;
+  const allocations: Allocation[] = [];
+
+  for (const candidate of ordered) {
+    if (left <= 0.005) break;
+    const take = Math.round(Math.min(candidate.remaining, left) * 100) / 100;
+    if (take <= 0) continue;
+    allocations.push({ expenseId: candidate.expenseId, amount: take });
+    left = Math.round((left - take) * 100) / 100;
+  }
+
+  return { allocations, unallocated: left > 0.005 ? left : 0 };
+}

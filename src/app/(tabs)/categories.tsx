@@ -135,6 +135,7 @@ export default function CategoriesScreen() {
               autoFocus
               placeholder="Category name"
               placeholderTextColor={theme.textSecondary}
+              inputAccessoryViewButtonLabel="Done"
               style={[
                 styles.input,
                 { color: theme.text, backgroundColor: theme.background, borderColor: theme.border },

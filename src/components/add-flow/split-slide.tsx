@@ -204,6 +204,7 @@ export function SplitSlide({ totalAmount, onChange }: SplitSlideProps) {
                     placeholder="Who are they? / name"
                     placeholderTextColor={theme.textSecondary}
                     selectionColor={theme.backgroundSelected}
+                    inputAccessoryViewButtonLabel="Done"
                     accessibilityLabel={`Name of participant ${index + 2}`}
                   />
                   <ThemedText type="small" themeColor="textSecondary">

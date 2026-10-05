@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { normalizeName, nameMatches, rankCandidates, resplitEvenly } from './matching';
+import { normalizeName, nameMatches, rankCandidates, resplitEvenly, allocateGreedy } from './matching';
 import type { MatchCandidate } from './matching';
 
 describe('normalizeName', () => {
@@ -127,5 +127,41 @@ describe('resplitEvenly', () => {
 
   it('returns an empty list for no parties', () => {
     expect(resplitEvenly(100, 0)).toEqual([]);
+  });
+});
+
+describe('allocateGreedy', () => {
+  it('pays the oldest share first, then the next', () => {
+    const older = candidate({
+      expenseId: 'older',
+      remaining: 200,
+      occurredAt: '2026-07-01T00:00:00.000Z',
+    });
+    const newer = candidate({
+      expenseId: 'newer',
+      remaining: 300,
+      occurredAt: '2026-08-01T00:00:00.000Z',
+    });
+
+    const { allocations, unallocated } = allocateGreedy([newer, older], 400);
+    expect(allocations).toEqual([
+      { expenseId: 'older', amount: 200 },
+      { expenseId: 'newer', amount: 200 },
+    ]);
+    expect(unallocated).toBe(0);
+  });
+
+  it('splits a partial payment across one share', () => {
+    const share = candidate({ expenseId: 'a', remaining: 500, occurredAt: '2026-07-01T00:00:00.000Z' });
+    const { allocations, unallocated } = allocateGreedy([share], 200);
+    expect(allocations).toEqual([{ expenseId: 'a', amount: 200 }]);
+    expect(unallocated).toBe(0);
+  });
+
+  it('surfaces any amount beyond every remaining balance', () => {
+    const share = candidate({ expenseId: 'a', remaining: 100, occurredAt: '2026-07-01T00:00:00.000Z' });
+    const { allocations, unallocated } = allocateGreedy([share], 250);
+    expect(allocations).toEqual([{ expenseId: 'a', amount: 100 }]);
+    expect(unallocated).toBe(150);
   });
 });

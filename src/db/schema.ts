@@ -95,6 +95,15 @@ CREATE TABLE IF NOT EXISTS settlement_allocations (
   updated_at TEXT NOT NULL
 );
 
+-- Remembers a UPI id (VPA) against a person's custom display name, so a credit
+-- from "anushka@okhdfc" auto-fills "Anushka" next time instead of asking. Stored
+-- lowercased; UPI ids are case-insensitive.
+CREATE TABLE IF NOT EXISTS upi_aliases (
+  upi_id TEXT PRIMARY KEY,
+  person_id TEXT NOT NULL REFERENCES people(id),
+  updated_at TEXT NOT NULL
+);
+
 -- Locked-phone cache of a credit SMS: the raw text is captured immediately and
 -- awaits review, then linked to a settlement or dismissed. Never auto-files.
 CREATE TABLE IF NOT EXISTS incoming_receipts (
