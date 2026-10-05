@@ -1,6 +1,5 @@
-import { useEffect } from 'react';
-import { useAppIntents, getPendingInvocationsAsync, removePendingInvocationAsync } from 'expo-app-intents';
-import { parseAnySms, BankSource, ParsedTransaction } from '../parsers';
+import { useAppIntents, removePendingInvocationAsync } from 'expo-app-intents';
+import { parseAnySms } from '../parsers';
 import { useAddExpenseIntentContext } from './add-expense-intent-provider';
 
 /**
@@ -14,25 +13,35 @@ import { useAddExpenseIntentContext } from './add-expense-intent-provider';
  * `useAddExpenseIntentContext()` to set the intent and navigate.
  */
 export function useAppIntentDispatcher(): void {
-  const { intent, clear, startManual } = useAddExpenseIntentContext();
+  const { setSmsIntent } = useAddExpenseIntentContext();
 
-  useAppIntents(async (pending, newIntent) => {
-    // Collect all invocations to process: pending snapshot + the new one that triggered this call
-    const toProcess = [...pending];
-    if (newIntent) toProcess.push(newIntent);
-
-    for (const inv of toProcess) {
+  useAppIntents(async (pending) => {
+    // `pending` is the current snapshot and already includes the invocation that
+    // triggered this call, so `newIntent` is redundant here — pushing it again
+    // would double-handle the newest invocation.
+    for (const inv of pending) {
       if (inv.name === 'processSms') {
         const text = inv.params.text as string | undefined;
+        if (__DEV__) {
+          console.log(
+            `[app-intent] processSms received (${text?.length ?? 0} chars): ${JSON.stringify(text?.slice(0, 80))}`
+          );
+        }
         if (text) {
-          // Parse the SMS text using the same parser the deep-link path uses
+          // Parse with the same parser the deep-link path uses, and only open
+          // the Add flow when a debit verb anchored an amount (a real expense) —
+          // balances, credits, OTPs and promos parse to no amount.
           const prefill = parseAnySms(text);
-          const bankSource = prefill.bankSource ?? 'unknown';
-
-          // Set the intent — this triggers the effect in AddExpenseIntentProvider
-          // that navigates to /add
-          // Note: We can't call setIntent directly here; we need to use the context
-          // The context doesn't expose a setter, so we'll need to add one or use a different approach
+          if (__DEV__) {
+            console.log('[app-intent] parseAnySms →', {
+              parseSucceeded: prefill.parseSucceeded,
+              amount: prefill.amount,
+              merchant: prefill.merchant,
+            });
+          }
+          if (prefill.parseSucceeded) {
+            setSmsIntent(prefill, text, prefill.bankSource ?? 'unknown');
+          }
         }
       }
       // Always remove the invocation after handling (or deciding to skip)

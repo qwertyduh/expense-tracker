@@ -49,13 +49,12 @@ FamApp by Trio`;
     expect(result.bankSource).toBe('gpay');
   });
 
-  it('extracts amount from generic Rs. pattern', () => {
+  it('rejects a bare amount with no debit verb', () => {
     const raw = 'Random text Rs. 100 somewhere';
     const result = parseAnySms(raw);
-    expect(result.amount).toBe(100);
+    expect(result.amount).toBeNull();
     expect(result.merchant).toBeNull();
-    expect(result.parseSucceeded).toBe(true);
-    expect(result.bankSource).toBe('unknown');
+    expect(result.parseSucceeded).toBe(false);
   });
 
   it('handles comma grouped amounts', () => {
@@ -77,6 +76,47 @@ FamApp by Trio`;
   it('keeps the raw text unchanged', () => {
     const raw = 'Spent Rs.49 From HDFC Bank Card x1234 At HAIER On 2026-08-10';
     expect(parseAnySms(raw).raw).toBe(raw);
+  });
+});
+
+// The gate is default-deny: an amount only counts when a debit verb anchors it.
+// These cases pin the allow/reject line so a future regex change can't quietly
+// open the app for balances, credits, OTPs or promos.
+describe('parseAnySms allow/reject', () => {
+  it('allows only messages where a debit verb anchors the amount', () => {
+    const allowed: [string, number][] = [
+      ['Rs.500 debited from your A/c. Avl Bal Rs.12,345', 500],
+      ['Your a/c XX1234 is debited with Rs.500 on 10-08-26', 500],
+      ['debited by Rs.200 towards your card', 200],
+      ['Spent Rs.49 From HDFC Bank Credit Card x1234 At HAIER On 2026-08-10', 49],
+      ['Spent Rs.500 at Big Bazaar Sale', 500],
+    ];
+
+    for (const [raw, amount] of allowed) {
+      const result = parseAnySms(raw);
+      expect(result.amount, raw).toBe(amount);
+      expect(result.parseSucceeded, raw).toBe(true);
+    }
+  });
+
+  it('rejects credits, balances, OTPs, future EMIs, statements and promos', () => {
+    const rejected = [
+      'Rs.5,000 credited to your A/c',
+      'Your A/c XX1234 has been credited with Rs.5,000',
+      'Avl Bal Rs.12,345.67',
+      '123456 is your OTP for txn of Rs.500. Do not share it.',
+      'Your EMI of Rs.2,000 will be debited on 5th',
+      'Get Rs.500 cashback on your next purchase',
+      'Spend Rs.5000 and get 10% cashback',
+      'Mini statement: Rs.500 debited, Rs.200 credited',
+      'Your card ending 1234 was used',
+    ];
+
+    for (const raw of rejected) {
+      const result = parseAnySms(raw);
+      expect(result.amount, raw).toBeNull();
+      expect(result.parseSucceeded, raw).toBe(false);
+    }
   });
 });
 

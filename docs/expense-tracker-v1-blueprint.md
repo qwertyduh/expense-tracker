@@ -201,13 +201,20 @@ export interface ParsedTransaction {
 }
 ```
 
-`occurredAt` is always `null` in practice — no parser extracts a date, and
-`add.tsx` stamps the expense with `new Date()` at confirm time. The field is kept
-so a date-extracting pattern can be added without a schema change.
+`occurredAt` is extracted from the message text when the SMS carries an `On …`
+date (`parseOccurredAt()` in `src/parsers/sms.ts`): `On DD/MM/YY` uses the
+device's current time-of-day, `On YYYY-MM-DD[:HH:MM:SS]` uses the message's own
+time. Impossible or future dates are rejected and fall back to `null`, and
+`add.tsx` then stamps the expense with `new Date()` at confirm time.
 
-**Fallback behavior (your chosen option A):** if `parseSucceeded` is false, Add
-Expense still opens, with the raw SMS text shown at the top for reference and
-every field left empty for manual fill-in. Nothing is silently lost.
+**Fallback behavior differs by channel.** On the App Intent path the Shortcut
+runs the foreground `Open Expense from SMS` intent only when the background
+classifier returned `true`, and the JS handler only sets an intent when
+`parseSucceeded` is true (`useAppIntentDispatcher.ts`). So a non-expense never
+opens the app, and an expense whose amount still fails to parse opens the app but
+shows no Add sheet. The legacy deep-link path (`useAddExpenseIntent.ts`) sets the
+intent regardless, so Add Expense opens with the raw SMS text shown and fields
+empty for manual fill-in. Nothing is silently lost.
 
 **Getting real regex data:** you mentioned asking someone to re-send old HDFC
 transaction texts — that already paid off, and the samples now live in

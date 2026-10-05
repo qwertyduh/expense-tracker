@@ -45,6 +45,26 @@ function readQueryParam(url: string, key: string): string | null {
   return null;
 }
 
+// Shared state for the intent, so both deep-link and App Intent paths can set it.
+let intentState: AddExpenseIntent | null = null;
+const listeners = new Set<(intent: AddExpenseIntent | null) => void>();
+
+function notifyListeners() {
+  // The listeners are React state setters; they need the current value, not a
+  // no-arg call (which would set the state to undefined).
+  listeners.forEach(listener => listener(intentState));
+}
+
+function setSmsIntentState(prefill: ParsedTransaction, rawText: string, bankSource?: BankSource) {
+  intentState = { source: 'sms', bankSource: bankSource ?? 'unknown', prefill, rawText };
+  notifyListeners();
+}
+
+function setManualIntentState() {
+  intentState = { source: 'manual', prefill: null };
+  notifyListeners();
+}
+
 // Wraps both manual "+ Add Expense" taps and incoming deep links into one
 // shape, so the Add Expense slide flow only ever has to handle one intent
 // type. Handles both cold-start (getInitialURL) and warm-start (addEventListener) links.
@@ -52,8 +72,16 @@ export function useAddExpenseIntent(): {
   intent: AddExpenseIntent | null;
   openManual: () => void;
   clear: () => void;
+  setSmsIntent: (prefill: ParsedTransaction, rawText: string, bankSource: BankSource) => void;
 } {
-  const [intent, setIntent] = useState<AddExpenseIntent | null>(null);
+  const [intent, setIntent] = useState<AddExpenseIntent | null>(intentState);
+
+  useEffect(() => {
+    listeners.add(setIntent);
+    return () => {
+      listeners.delete(setIntent);
+    };
+  }, []);
 
   useEffect(() => {
     // Cold start: app was launched by the deep link.
@@ -87,16 +115,21 @@ export function useAddExpenseIntent(): {
     const prefill = parseAnySms(rawText);
     const bankSource = prefill.bankSource ?? 'unknown';
 
-    setIntent({ source: 'sms', bankSource, prefill, rawText });
+    setSmsIntentState(prefill, rawText, bankSource);
   }
 
   function openManual() {
-    setIntent({ source: 'manual', prefill: null });
+    setManualIntentState();
   }
 
   function clear() {
-    setIntent(null);
+    intentState = null;
+    notifyListeners();
   }
 
-  return { intent, openManual, clear };
+  function setSmsIntent(prefill: ParsedTransaction, rawText: string, bankSource: BankSource) {
+    setSmsIntentState(prefill, rawText, bankSource);
+  }
+
+  return { intent, openManual, clear, setSmsIntent };
 }

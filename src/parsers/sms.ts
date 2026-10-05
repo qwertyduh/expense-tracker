@@ -1,12 +1,31 @@
 import { ParsedTransaction } from './types';
 
-const AMOUNT_PATTERNS = [
-  /Sent\s+Rs\.?\s?([\d,]+\.?\d*)/i,
-  /Spent\s+Rs\.?\s?([\d,]+\.?\d*)/i,
-  /You\s+paid\s+Rs\.?\s?([\d,]+\.?\d*)/i,
-  /Paid\s+Rs\.?\s?([\d,]+\.?\d*)/i,
-  /Rs\.?\s?([\d,]+\.?\d*)/i,
-  /₹\s?([\d,]+\.?\d*)/i,
+// A message counts as an expense only when its amount is attached to a debit
+// verb. Matching the number alone is not enough: balances ("Avl Bal Rs.5000"),
+// incoming credits ("Rs.5000 credited"), OTP references and marketing copy all
+// carry "Rs."/₹ figures, and the naked-amount patterns this replaced opened the
+// app for every one of them. When in doubt the filter stays closed.
+//
+// Ordered amount→verb first, then verb→amount, then the GPay screen. Starting
+// with amount→verb keeps "Rs.500 debited. Avl Bal Rs.5000" anchored to the 500,
+// not the trailing balance.
+const DEBIT_AMOUNT_PATTERNS = [
+  // amount → verb: "Rs.500 debited", "INR 500 has been debited", "Rs.100 withdrawn"
+  /(?:Rs\.?|INR|₹)\s?([\d,]+(?:\.\d+)?)\s*(?:has\s+been\s+|is\s+|was\s+)?(?:debited|deducted|withdrawn|charged)\b/i,
+  // verb → amount: "Sent Rs.501.00", "Spent Rs.49", "You paid Rs. 1.00",
+  // "Paid Rs.5", "debited by Rs.200". The gap stops at a sentence boundary so a
+  // trailing balance in the next sentence can't be mistaken for the amount.
+  /\b(?:Sent|Spent|You\s+paid|Paid|Debited|Deducted|Withdrawn|Charged|Transferred)\b[^.\n]{0,40}?(?:Rs\.?|INR|₹)\s?([\d,]+(?:\.\d+)?)/i,
+  // GPay confirmation screen: the amount line is literally "Pay ₹1.00".
+  /^Pay\s+(?:Rs\.?|INR|₹)\s?([\d,]+(?:\.\d+)?)\s*$/im,
+] as const;
+
+// Non-transactions that must stay closed even when they contain a debit verb and
+// an amount: statements list many entries, and an OTP names an amount without
+// being a payment.
+const REJECT_PATTERNS = [
+  /\botp\b|one[\s-]?time\s+password|verification\s+code|do\s+not\s+share/i,
+  /mini[\s-]?statement|account\s+statement|e[\s-]?statement/i,
 ] as const;
 
 const MERCHANT_PATTERNS = [
@@ -93,17 +112,23 @@ function parseOccurredAt(text: string, now: Date): string | null {
 // The single parser for every bank SMS, and for the GPay screen dump arriving
 // over the same deep link (both shapes are covered by the pattern lists above).
 //
+// The gate is default-deny: an amount is only claimed when a debit verb anchors
+// it, so credits, balances, OTPs, statements and promos all return
+// `parseSucceeded: false` and never reach the Add flow.
+//
 // `now` is the device clock, injectable so date resolution is testable without
 // freezing time; production callers always take the default.
 export function parseAnySms(raw: string, now: Date = new Date()): ParsedTransaction {
   const text = raw.trim();
 
   let amount: number | null = null;
-  for (const regex of AMOUNT_PATTERNS) {
-    const match = text.match(regex);
-    if (match) {
-      amount = parseFloat(match[1].replace(/,/g, ''));
-      break;
+  if (!REJECT_PATTERNS.some((regex) => regex.test(text))) {
+    for (const regex of DEBIT_AMOUNT_PATTERNS) {
+      const match = text.match(regex);
+      if (match) {
+        amount = parseFloat(match[1].replace(/,/g, ''));
+        break;
+      }
     }
   }
 

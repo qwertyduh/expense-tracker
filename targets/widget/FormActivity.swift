@@ -10,7 +10,6 @@ struct FormActivityAttributes: ActivityAttributes {
 }
 
 // 2. Build the UI
-@main
 struct FormActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: FormActivityAttributes.self) { context in
