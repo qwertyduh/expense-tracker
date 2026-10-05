@@ -30,6 +30,23 @@ export function addPerson(displayName: string): PersonRow {
   return { id, display_name: displayName, is_self: 0, created_at: now, updated_at: now };
 }
 
+export function getPerson(id: string): PersonRow | null {
+  return db.getFirstSync<PersonRow>('SELECT * FROM people WHERE id = ?', id) ?? null;
+}
+
+// Case-insensitive find-or-create by display name (trimmed). Used when capturing
+// named split participants and when recording a repayment from someone.
+export function findOrCreatePerson(displayName: string): PersonRow {
+  const name = displayName.trim();
+  if (!name) throw new Error('Person name is required');
+  const existing = db.getFirstSync<PersonRow>(
+    'SELECT * FROM people WHERE is_self = 0 AND lower(display_name) = lower(?) LIMIT 1',
+    name
+  );
+  if (existing) return existing;
+  return addPerson(name);
+}
+
 export function getSelf(): PersonRow | null {
   return db.getFirstSync<PersonRow>('SELECT * FROM people WHERE is_self = 1 LIMIT 1') ?? null;
 }

@@ -59,10 +59,12 @@ export default function AddScreen() {
   const canConfirm =
     totalAmount > 0 && category != null && split != null;
 
-  const confirmAndSave = () => {
-    if (!canConfirm || !category || !split) return;
+  // Shared DB write for both confirm paths; returns the new id so the edit
+  // path can navigate to it.
+  const saveExpense = (): string | null => {
+    if (!canConfirm || !category || !split) return null;
     const trimmedLabel = label.trim() || null;
-    insertExpense({
+    const { expenseId } = insertExpense({
       totalAmount,
       selfShare: split.selfShare,
       categoryId: category.id,
@@ -74,7 +76,20 @@ export default function AddScreen() {
       // The SMS carries its own date; fall back to the save time when it had
       // none (manual entry, or a message with an unusable date).
       occurredAt: smsIntent?.prefill.occurredAt ?? new Date().toISOString(),
+      participants: split.participants,
     });
+    return expenseId;
+  };
+
+  const confirmAndSave = () => {
+    saveExpense();
+  };
+
+  const confirmAndEditAmount = () => {
+    const expenseId = saveExpense();
+    if (!expenseId) return;
+    clear();
+    router.replace(`/expense/${expenseId}?edit=1`);
   };
 
   const exitToHome = () => {
@@ -121,6 +136,7 @@ export default function AddScreen() {
           split={split}
           canConfirm={canConfirm}
           onConfirm={confirmAndSave}
+          onConfirmAndEdit={confirmAndEditAmount}
           onDone={exitToHome}
         />
       )}

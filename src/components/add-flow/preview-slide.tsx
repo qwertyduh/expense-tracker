@@ -16,6 +16,8 @@ export type PreviewSlideProps = {
   split: SplitSummary | null;
   canConfirm: boolean;
   onConfirm: () => void;
+  /** Persist, then open the new expense in edit mode so amounts can be tweaked. */
+  onConfirmAndEdit: () => void;
   /** clear() the intent + navigate back to Home. */
   onDone: () => void;
 };
@@ -56,6 +58,13 @@ export function PreviewSlide(props: PreviewSlideProps) {
     timer.current = setTimeout(props.onDone, SAVED_DELAY_MS);
   };
 
+  // Same write as confirm, but jump straight to the expense edit screen so the
+  // user can adjust the split amounts — no success-state delay on this path.
+  const confirmAndEdit = () => {
+    if (!props.canConfirm || saved) return;
+    props.onConfirmAndEdit();
+  };
+
   if (saved) {
     return (
       <View style={styles.saved}>
@@ -89,7 +98,13 @@ export function PreviewSlide(props: PreviewSlideProps) {
             </ThemedText>
             <View style={[styles.card, { backgroundColor: theme.backgroundElement }]}>
               <Row k="You" v={fmt(split.selfShare)} emphasize />
-              <Row k={`Others (${split.participantCount - 1})`} v={fmt(totalAmount - split.selfShare)} />
+              {split.participants.map((participant, index) => (
+                <Row
+                  key={`${participant.name}-${index}`}
+                  k={participant.name}
+                  v={fmt(participant.shareAmount)}
+                />
+              ))}
             </View>
           </>
         )}
@@ -115,6 +130,14 @@ export function PreviewSlide(props: PreviewSlideProps) {
         ]}>
         <ThemedText type="smallBold" themeColor={canConfirm ? 'text' : 'textSecondary'}>
           Confirm & Save
+        </ThemedText>
+      </Pressable>
+      <Pressable
+        onPress={confirmAndEdit}
+        disabled={!canConfirm}
+        style={[styles.editButton, { borderColor: theme.border }]}>
+        <ThemedText type="smallBold" themeColor={canConfirm ? 'accent' : 'textSecondary'}>
+          Confirm & edit amount
         </ThemedText>
       </Pressable>
       {!canConfirm && (
@@ -156,6 +179,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: Spacing.three,
     borderRadius: Spacing.three,
+  },
+  editButton: {
+    alignItems: 'center',
+    paddingVertical: Spacing.three,
+    borderRadius: Spacing.three,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   hint: {
     textAlign: 'center',

@@ -1,11 +1,11 @@
 import { randomUUID } from 'expo-crypto';
 
+import { findOrCreatePerson } from './people';
 import { db } from './schema';
 
 // The expense row's `amount` is YOUR share. total_amount is the full bill.
-// Splits are a count + your share: this is a local single-user app, so the
-// other people are never tracked as named participants — they just cover the
-// difference between the bill and your share.
+// A split is your share plus named participants, each carrying the portion they
+// owe. Those shares are what incoming repayments get matched against.
 export type InsertExpenseInput = {
   totalAmount: number;
   /** Your portion of the bill — stored as expenses.amount. */
@@ -17,6 +17,8 @@ export type InsertExpenseInput = {
   bankSource: string | null;
   rawSmsText: string | null;
   occurredAt: string; // ISO — actual transaction time
+  /** Named split participants and the share each owes; omitted when unsplit. */
+  participants?: { name: string; shareAmount: number }[];
 };
 
 export type InsertExpenseResult = {
@@ -77,6 +79,29 @@ export function insertExpense(input: InsertExpenseInput): InsertExpenseResult {
       now
     );
 
+    // Resolve named participants (find-or-create) so the snapshot can carry
+    // their stable person ids alongside the display names.
+    const participantSnapshot = (input.participants ?? []).map((participant) => {
+      const person = findOrCreatePerson(participant.name);
+      const shareAmount = round2(participant.shareAmount);
+      db.runSync(
+        `INSERT INTO expense_participants
+           (id, expense_id, person_id, share_amount, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        randomUUID(),
+        expenseId,
+        person.id,
+        shareAmount,
+        now,
+        now
+      );
+      return {
+        person_id: person.id,
+        display_name: person.display_name,
+        share_amount: shareAmount,
+      };
+    });
+
     db.runSync(
       `INSERT INTO activity_log
          (id, action, expense_id, expense_snapshot, occurred_at, created_at)
@@ -84,7 +109,7 @@ export function insertExpense(input: InsertExpenseInput): InsertExpenseResult {
       randomUUID(),
       'created',
       expenseId,
-      JSON.stringify(snapshot),
+      JSON.stringify({ ...snapshot, participants: participantSnapshot }),
       now,
       now
     );
@@ -205,6 +230,93 @@ export function deleteExpense(id: string): void {
       now,
       now
     );
+  });
+}
+
+export type ParticipantWithBalance = {
+  personId: string;
+  personName: string;
+  shareAmount: number;
+  receivedAmount: number; // sum of settlement_allocations for this expense+person
+  remaining: number; // shareAmount - receivedAmount
+};
+
+// Named participants on one expense, each with how much of their share has been
+// received. received_amount is aggregated from the settlements ledger, so this
+// stays correct no matter how many repayments land on the share.
+export function getExpenseParticipants(expenseId: string): ParticipantWithBalance[] {
+  const rows = db.getAllSync<{
+    person_id: string;
+    display_name: string;
+    share_amount: number;
+    received_amount: number;
+  }>(
+    `SELECT ep.person_id, p.display_name, ep.share_amount,
+            COALESCE(sa.received, 0) AS received_amount
+     FROM expense_participants ep
+     JOIN people p ON p.id = ep.person_id
+     LEFT JOIN (
+       SELECT expense_id, person_id, SUM(amount) AS received
+       FROM settlement_allocations
+       GROUP BY expense_id, person_id
+     ) sa ON sa.expense_id = ep.expense_id AND sa.person_id = ep.person_id
+     WHERE ep.expense_id = ?
+     ORDER BY ep.created_at ASC`,
+    expenseId
+  );
+
+  return rows.map((row) => {
+    const shareAmount = round2(row.share_amount);
+    const receivedAmount = round2(row.received_amount);
+    return {
+      personId: row.person_id,
+      personName: row.display_name,
+      shareAmount,
+      receivedAmount,
+      remaining: round2(shareAmount - receivedAmount),
+    };
+  });
+}
+
+// Replace the split of an existing expense: sets selfShare and the named
+// participant shares. Used by the "resplit evenly" action and the expense edit
+// screen. Transactional; keeps existing settlement_allocations untouched.
+export function setExpenseSplit(
+  expenseId: string,
+  selfShare: number,
+  participants: { name: string; shareAmount: number }[]
+): void {
+  const existing = getExpense(expenseId);
+  if (!existing) return;
+  const now = new Date().toISOString();
+  const amount = round2(Math.max(0, Math.min(selfShare, existing.total_amount)));
+  const isSplit = amount < round2(existing.total_amount);
+
+  db.withTransactionSync(() => {
+    db.runSync(
+      `UPDATE expenses SET amount = ?, is_split = ?, updated_at = ? WHERE id = ?`,
+      amount,
+      isSplit ? 1 : 0,
+      now,
+      expenseId
+    );
+    // Rebuild the participant set; allocations key off (expense_id, person_id)
+    // so they survive this delete/re-insert and keep counting against the share.
+    db.runSync('DELETE FROM expense_participants WHERE expense_id = ?', expenseId);
+    for (const participant of participants) {
+      const person = findOrCreatePerson(participant.name);
+      db.runSync(
+        `INSERT INTO expense_participants
+           (id, expense_id, person_id, share_amount, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        randomUUID(),
+        expenseId,
+        person.id,
+        round2(participant.shareAmount),
+        now,
+        now
+      );
+    }
   });
 }
 

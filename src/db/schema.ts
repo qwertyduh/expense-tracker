@@ -66,6 +66,48 @@ CREATE TABLE IF NOT EXISTS merchant_memory (
   split_count INTEGER NOT NULL DEFAULT 1,
   updated_at TEXT NOT NULL
 );
+
+-- One money-received event from a person (a repayment, not an expense). Its own
+-- ledger: activity_log's CHECK constraint only knows created/edited/deleted, so
+-- settlements are tracked here instead.
+CREATE TABLE IF NOT EXISTS settlements (
+  id TEXT PRIMARY KEY,
+  person_id TEXT NOT NULL REFERENCES people(id),
+  amount REAL NOT NULL,
+  source TEXT NOT NULL CHECK(source IN ('manual', 'sms')),
+  bank_source TEXT,
+  raw_sms_text TEXT,
+  occurred_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- Which participant share(s) a settlement pays down. A settlement can cover
+-- several expenses, and a single share can be paid down by several settlements;
+-- remaining is always derived as share_amount - SUM(allocations).
+CREATE TABLE IF NOT EXISTS settlement_allocations (
+  id TEXT PRIMARY KEY,
+  settlement_id TEXT NOT NULL REFERENCES settlements(id) ON DELETE CASCADE,
+  expense_id TEXT NOT NULL REFERENCES expenses(id) ON DELETE CASCADE,
+  person_id TEXT NOT NULL REFERENCES people(id),
+  amount REAL NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- Locked-phone cache of a credit SMS: the raw text is captured immediately and
+-- awaits review, then linked to a settlement or dismissed. Never auto-files.
+CREATE TABLE IF NOT EXISTS incoming_receipts (
+  id TEXT PRIMARY KEY,
+  raw_sms_text TEXT NOT NULL,
+  bank_source TEXT,
+  parsed_amount REAL,
+  parsed_name TEXT,
+  status TEXT NOT NULL CHECK(status IN ('pending', 'linked', 'dismissed')),
+  received_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `;
 
 export function initDatabase(): void {

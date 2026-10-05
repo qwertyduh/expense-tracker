@@ -4,8 +4,8 @@
 // message (detectBankHint in sms.ts), not a parser: dispatching on it would mean
 // matching the same shapes twice. parseGpay stays exported for the Android screen
 // capture, but nothing routes to it.
-import { parseAnySms } from './sms';
+import { parseAnySms, parseIncomingSms } from './sms';
 import { parseGpay } from './gpay';
 
-export { parseAnySms, parseGpay };
+export { parseAnySms, parseGpay, parseIncomingSms };
 export * from './types';

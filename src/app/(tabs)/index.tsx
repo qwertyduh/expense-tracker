@@ -1,6 +1,6 @@
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import { Dimensions, StyleSheet, View } from 'react-native';
+import { Dimensions, Pressable, StyleSheet, View } from 'react-native';
 import { PieChart } from 'react-native-chart-kit';
 
 import { Card } from '@/components/ui/card';
@@ -11,6 +11,8 @@ import { Screen, ScreenHeader } from '@/components/ui/screen';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { listExpenses, type ExpenseRow } from '@/db/expenses';
+import { countPendingIncomingReceipts } from '@/db/incoming-receipts';
+import { receivedTotalSince, totalOutstanding } from '@/db/settlements';
 import { useAddExpenseIntentContext } from '@/hooks/add-expense-intent-provider';
 import { useTheme } from '@/hooks/use-theme';
 import { formatCurrency, formatRelative, monthKey, monthLabel } from '@/lib/format';
@@ -31,9 +33,17 @@ export default function HomeScreen() {
   const router = useRouter();
   const { startManual } = useAddExpenseIntentContext();
   const [expenses, setExpenses] = useState<ExpenseRow[]>([]);
+  const [receivedThisMonth, setReceivedThisMonth] = useState(0);
+  const [outstanding, setOutstanding] = useState(0);
+  const [pendingReceipts, setPendingReceipts] = useState(0);
 
   const reload = useCallback(() => {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     setExpenses(listExpenses(200));
+    setReceivedThisMonth(receivedTotalSince(monthStart.toISOString()));
+    setOutstanding(totalOutstanding());
+    setPendingReceipts(countPendingIncomingReceipts());
   }, []);
 
   useFocusEffect(
@@ -79,7 +89,24 @@ export default function HomeScreen() {
         <ThemedText type="title" style={styles.total}>
           {formatCurrency(monthTotal)}
         </ThemedText>
+        <View style={[styles.summaryRow, { borderTopColor: theme.border }]}>
+          <ThemedText type="small" themeColor="textSecondary">
+            Received back this month
+          </ThemedText>
+          <ThemedText type="smallBold">{formatCurrency(receivedThisMonth)}</ThemedText>
+        </View>
       </Card>
+
+      {outstanding > 0 ? (
+        <Card>
+          <ThemedText type="small" themeColor="textSecondary">
+            Owed to you
+          </ThemedText>
+          <ThemedText type="title" style={styles.total}>
+            {formatCurrency(outstanding)}
+          </ThemedText>
+        </Card>
+      ) : null}
 
       {byCategory.length > 0 ? (
         <Card style={styles.chartCard}>
@@ -96,6 +123,21 @@ export default function HomeScreen() {
             }}
           />
         </Card>
+      ) : null}
+
+      {pendingReceipts > 0 ? (
+        <Pressable
+          onPress={() => router.push('/receive')}
+          style={({ pressed }) => (pressed ? styles.pressed : null)}>
+          <Card style={styles.banner}>
+            <ThemedText type="smallBold">
+              {pendingReceipts} payment{pendingReceipts === 1 ? '' : 's'} received — tap to review
+            </ThemedText>
+            <ThemedText type="small" themeColor="textSecondary">
+              Match {pendingReceipts === 1 ? 'it' : 'them'} to who paid you back
+            </ThemedText>
+          </Card>
+        </Pressable>
       ) : null}
 
       <ThemedText type="smallBold" style={styles.sectionTitle}>
@@ -130,6 +172,20 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   total: {
     marginTop: Spacing.one,
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: Spacing.two,
+    paddingTop: Spacing.two,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  pressed: {
+    opacity: 0.7,
+  },
+  banner: {
+    gap: Spacing.half,
   },
   chartCard: {
     alignItems: 'center',

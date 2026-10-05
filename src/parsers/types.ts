@@ -7,6 +7,15 @@ export interface ParsedTransaction {
   bankSource?: string;
 }
 
+export interface ParsedIncoming {
+  amount: number | null;
+  senderName: string | null;
+  occurredAt: string | null; // ISO
+  raw: string;
+  parseSucceeded: boolean;
+  bankSource?: string;
+}
+
 // 'hdfc' is a bank SMS source; 'gpay' is a UPI-app screen source (captured by
 // the Accessibility Service). Both funnel into the same parsed-transaction shape.
 export type BankSource = string;

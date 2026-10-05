@@ -3,12 +3,14 @@ import Foundation
 internal import ExpoAppIntents
 
 /// Background half of the SMS capture pair, and the Shortcut's first action.
-/// It never brings the app up (`openAppWhenRun = false`), but it does persist the
-/// `processSms` invocation for an expense. The app may still be cold: the
-/// invocation waits in the dispatcher's queue, JS parses it on mount, and
-/// `OpenExpenseSMSIntent` (run only when this returns `true`) brings the app
-/// forward so that parse can route to /add. Non-expenses return `false` and
-/// dispatch nothing, so they can never open the app.
+/// It never brings the app up (`openAppWhenRun = false`), but it does persist an
+/// invocation for the app. Expenses persist a `processSms` invocation and return
+/// `true`; the Shortcut then runs `OpenExpenseSMSIntent`, which brings the app
+/// forward so JS can route to /add. Credits persist a `processSmsIncoming`
+/// invocation and still return `false`, so the app is never opened — a credit can
+/// arrive while the phone is locked. That queued invocation IS the cache: JS
+/// drains it on the next app launch. Rejected and unknown messages dispatch
+/// nothing and return `false`.
 struct ProcessSMSIntent: AppIntent {
     static var title: LocalizedStringResource = "Process Incoming SMS"
     static var openAppWhenRun: Bool = false   // silent background classification
@@ -22,19 +24,30 @@ struct ProcessSMSIntent: AppIntent {
             return .result(value: false)
         }
 
-        let isExpenseMessage = isExpense(text: messageText)
-
         // Only a real expense reaches the JS Add Expense path. Dispatch from here
         // (not from the foreground intent) so the raw text is wired once and the
         // invocation is queued even if the app is not running yet.
-        if isExpenseMessage {
+        if isExpense(text: messageText) {
             await AppIntentDispatcher.shared.dispatch(
                 name: "processSms",
                 params: ["text": .string(messageText)]
             )
+            return .result(value: true)
         }
 
-        return .result(value: isExpenseMessage)
+        if isCredit(text: messageText) {
+            // Money in. Queue it for JS but return false so the Shortcut never
+            // opens the app — the message may arrive while the phone is locked.
+            // The persisted invocation is the cache; JS drains it on the next
+            // app launch.
+            await AppIntentDispatcher.shared.dispatch(
+                name: "processSmsIncoming",
+                params: ["text": .string(messageText)]
+            )
+            return .result(value: false)
+        }
+
+        return .result(value: false)
     }
 
     private func isExpense(text: String) -> Bool {
@@ -46,6 +59,19 @@ struct ProcessSMSIntent: AppIntent {
             #"(?:Rs\.?|INR|₹)\s?[\d,]+(?:\.\d+)?\s*(?:has\s+been\s+|is\s+|was\s+)?(?:debited|deducted|withdrawn|charged)\b"#,
             #"\b(?:Sent|Spent|You\s+paid|Paid|Debited|Deducted|Withdrawn|Charged|Transferred)\b[^.\n]{0,40}?(?:Rs\.?|INR|₹)\s?[\d,]"#,
             #"(?m)^Pay\s+(?:Rs\.?|INR|₹)\s?[\d,]"#,
+        ]
+        return patterns.contains { text.range(of: $0, options: [.regularExpression, .caseInsensitive]) != nil }
+    }
+
+    private func isCredit(text: String) -> Bool {
+        // Mirror of CREDIT_AMOUNT_PATTERNS in src/parsers/sms.ts — default-deny.
+        // Like isExpense, each alternative carries BOTH the credit verb and the
+        // amount. A credit never opens the app: the classifier only queues the
+        // invocation. Keep this in sync when the parser changes.
+        let patterns = [
+            #"(?:Rs\.?|INR|₹)\s?[\d,]+(?:\.\d+)?\s*(?:has\s+been\s+|is\s+|was\s+)?(?:credited|received|deposited|refunded|added)\b"#,
+            #"\bcredited\s+with\s+(?:Rs\.?|INR|₹)\s?[\d,]+"#,
+            #"\b(?:Received|Credited|Deposited|Refunded|You\s+received)\b[^.\n]{0,40}?(?:Rs\.?|INR|₹)\s?[\d,]"#,
         ]
         return patterns.contains { text.range(of: $0, options: [.regularExpression, .caseInsensitive]) != nil }
     }

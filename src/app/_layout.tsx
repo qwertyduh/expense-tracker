@@ -35,6 +35,7 @@ export default function RootLayout() {
         <Stack>
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           <Stack.Screen name="add" options={{ presentation: 'modal' }} />
+          <Stack.Screen name="receive" options={{ presentation: 'modal' }} />
         </Stack>
       </AddExpenseIntentProvider>
     </ThemeProvider>
