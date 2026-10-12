@@ -16,6 +16,7 @@ import {
   reorderCategories,
   type CategoryRow,
 } from '@/db/categories';
+import { syncMerchantCategoryMap } from '@/lib/merchant-category-sync';
 import { useTheme } from '@/hooks/use-theme';
 
 export default function CategoriesScreen() {
@@ -53,6 +54,7 @@ export default function CategoriesScreen() {
     } else {
       addCategory(name);
     }
+    syncMerchantCategoryMap();
     setEditorOpen(false);
     reload();
   };
@@ -71,6 +73,7 @@ export default function CategoriesScreen() {
           style: 'destructive',
           onPress: () => {
             deleteCategory(category.id);
+            syncMerchantCategoryMap();
             reload();
           },
         },

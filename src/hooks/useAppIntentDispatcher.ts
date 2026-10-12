@@ -1,6 +1,7 @@
 import { useAppIntents, removePendingInvocationAsync } from 'expo-app-intents';
 import { parseAnySms, parseIncomingSms } from '../parsers';
 import { insertIncomingReceipt } from '../db/incoming-receipts';
+import { autoSaveCapture } from '../lib/pending-captures';
 import { useAddExpenseIntentContext } from './add-expense-intent-provider';
 import { setReceiveIntent } from './receive-intent';
 
@@ -66,6 +67,17 @@ export function useAppIntentDispatcher(): void {
             receivedAt: prefill.occurredAt ?? new Date().toISOString(),
           });
           setReceiveIntent({ source: 'sms', receiptId: receipt.id, prefill, rawText: text });
+        }
+      }
+      if (inv.name === 'processSmsSave') {
+        const text = inv.params.text as string | undefined;
+        if (__DEV__) {
+          console.log(`[app-intent] processSmsSave received: ${JSON.stringify(text?.slice(0, 80))}`);
+        }
+        if (text) {
+          // The capsule's Save button. The native intent already dismissed the
+          // capsule and cleared the pending capture; just write the expense.
+          autoSaveCapture(text);
         }
       }
       // Always remove the invocation after handling (or deciding to skip)

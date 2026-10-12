@@ -30,6 +30,15 @@ export function listAllCategories(): CategoryRow[] {
   );
 }
 
+// The catch-all used for a capture auto-logged without a known category (the same
+// "Unsorted" bucket the Android overlay files ignored payments into).
+export function getUnsortedCategory(): CategoryRow | null {
+  return db.getFirstSync<CategoryRow>(
+    'SELECT * FROM categories WHERE name = ? LIMIT 1',
+    'Unsorted'
+  );
+}
+
 // Called the moment a category is picked (not on final confirm) so the
 // quick-pick chips re-order live, per blueprint §3.
 export function touchCategory(id: string): void {

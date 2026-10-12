@@ -5,6 +5,7 @@ import { ParsedTransaction, BankSource } from '@/parsers';
 
 import { useAddExpenseIntent } from './useAddExpenseIntent';
 import { useReceiveIntent, setReceiveIntent, ReceiveIntent } from './receive-intent';
+import { liveActivity } from '@/lib/live-activity';
 
 // The low-level hook wires Linking listeners. It must stay mounted for the
 // whole app lifetime so warm-start deep links are caught wherever the user is
@@ -42,6 +43,9 @@ export function AddExpenseIntentProvider({ children }: { children: ReactNode }) 
     const goToAdd = () => {
       // Don't route without a scene; the active listener below covers launch.
       if (AppState.currentState === 'active') {
+        // Opening the Add flow from a capture means the capsule has done its job;
+        // dismiss it (covers both the tap deep link and the App Intent queue).
+        liveActivity.endAll().catch(() => {});
         router.navigate('/add');
       }
     };

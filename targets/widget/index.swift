@@ -8,6 +8,6 @@ struct exportWidgets: WidgetBundle {
         widget()
         widgetControl()
         WidgetLiveActivity()
-        FormActivityWidget()
+        ExpenseCaptureActivity()
     }
 }

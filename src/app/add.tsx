@@ -16,6 +16,8 @@ import { getMerchantMemory, rememberMerchant } from "@/db/merchant-memory";
 import { AddExpenseIntent } from "@/hooks/useAddExpenseIntent";
 import { useAddExpenseIntentContext } from "@/hooks/add-expense-intent-provider";
 import { useKeyboardHeight } from "@/hooks/use-keyboard";
+import { liveActivity } from "@/lib/live-activity";
+import { syncMerchantCategoryMap } from "@/lib/merchant-category-sync";
 
 const STEP_NAMES = ["Amount", "Category", "Split", "Label", "Preview"] as const;
 const LAST_STEP = STEP_NAMES.length - 1;
@@ -135,6 +137,14 @@ export default function AddScreen() {
     // writes should teach anything.
     if (smsIntent?.prefill.merchant) {
       rememberMerchant(smsIntent.prefill.merchant, category.id, split.participantCount);
+      // Refresh the native vendor -> category map the Live Activity reads.
+      syncMerchantCategoryMap();
+    }
+    // Confirming (or confirm-and-edit) is the end of the capture: dismiss the capsule
+    // and clear the pending entry so the foreground flush can't log it again.
+    liveActivity.endAll().catch(() => {});
+    if (smsIntent) {
+      void liveActivity.removePendingCapture(smsIntent.rawText);
     }
     return expenseId;
   };

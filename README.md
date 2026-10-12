@@ -58,7 +58,10 @@ nothing pre-filled.
 
 - Multi-user sync and real "who owes who" settlement
 - Budget alerts, weekly digest, yearly recap
-- Dynamic Island / Live Activity as an alternate iOS trigger
+
+The Dynamic Island / Live Activity entry path now exists on iOS: an expense SMS
+starts a Live Activity from a background App Intent instead of opening the app
+(see [docs/ios-shortcut-setup.md](docs/ios-shortcut-setup.md)).
 
 The Apple Shortcut and its Message automation are written up in
 [docs/ios-shortcut-setup.md](docs/ios-shortcut-setup.md), but the automation has
@@ -67,9 +70,9 @@ to be built by hand on each phone — it can't be exported or shared — so it i
 
 ## Planned, future versions
 
-1. **Next:** Dynamic Island / Live Activity as an alternate entry trigger
-   (requires native Swift, a real complexity jump beyond Expo's managed
-   workflow)
+1. **Next:** Live Activity interactions — an in-capsule **Edit** button that opens
+   the Add flow at the split slide, and auto-saving a capsule that is ignored or
+   dismissed.
 2. **After that:** Supabase-backed multi-user sync, real "who owes who"
    settlement, budget alerts, weekly digest, yearly recap
 

@@ -8,13 +8,15 @@ bank SMS arrives
    → Message automation fires (no confirmation tap)
    → Shortcut runs "Process Incoming SMS"  (background classifier, never opens app)
    → Swift isRejected()  → OTP/statement?   → return false (dies silently)
-   → Swift isExpense()   → debit + amount?  → dispatch("processSms")         → return true
+   → Swift isExpense()   → debit + amount?  → stash text natively            → return true
    → Swift isCredit()    → credit + amount? → dispatch("processSmsIncoming") → return false
 
 EXPENSE (classifier returned true)
-   → Shortcut's If passes → runs "Open Expense from SMS" (foreground, opens the app)
-   → JS useAppIntents drains the queue, runs parseAnySms(text)
-   → parseSucceeded? → setSmsIntent → navigate to /add pre-filled
+   → Shortcut's If passes → runs "Show Expense Capture" (background; app stays closed)
+   → LiveActivityIntent starts a Dynamic Island / Lock Screen capsule (amount · vendor · category)
+   → Edit   → deep link opens /add pre-filled (JS parses, reviews)
+   → Save   → dispatch("processSmsSave") → JS writes the expense, no app open
+   → ignore → capture stays pending; auto-logged on the next app foreground
 
 CREDIT (classifier returned false; app NOT opened)
    → Shortcut's If fails, nothing else runs; invocation waits in the native queue
@@ -32,30 +34,32 @@ that decision into the Shortcut's `If`:
 
 - **`Process Incoming SMS`** (`ProcessSMSIntent`) runs with
   `openAppWhenRun = false`. It applies the native `isRejected()` → `isExpense()`
-  → `isCredit()` gate, returns a `Bool`, and dispatches the raw text to JS —
-  `processSms` for an expense, `processSmsIncoming` for a credit. It never opens
-  the app.
-- **`Open Expense from SMS`** (`OpenExpenseSMSIntent`) runs with
-  `openAppWhenRun = true`, has **no parameters**, and does no work: it only
-  brings the app up. The Shortcut runs it only when the classifier returned
-  `true`.
+  → `isCredit()` gate and returns a `Bool`. For an expense it only stashes the raw
+  text natively (no JS dispatch — the capsule is the surface now). For a credit it
+  dispatches `processSmsIncoming`. It never opens the app.
+- **`Show Expense Capture`** (`ShowExpenseCaptureIntent`) is a
+  `LiveActivityIntent` (iOS 17.2+), runs with `openAppWhenRun = false`, and does
+  no app work: it starts the Dynamic Island / Lock Screen Live Activity. The
+  Shortcut runs it only when the classifier returned `true`. The capsule carries
+  two actions: **Edit** (deep link into `/add`) and **Save** (`SaveExpenseCaptureIntent`).
 
 Dispatch lives in the classifier on purpose. The classifier's `Message Text` is
-wired once (from the automation/SMS) and is the value the Shortcut already has;
-the foreground intent would otherwise need that same variable bound a second
-time, and an empty or miswired second binding silently yields no amount with no
-error. The classifier writes the invocation to the dispatcher's queue even when
-the app is not running, and the foreground intent opens the app so JS can drain
-it.
+wired once (from the automation/SMS) and is the value the Shortcut already has.
+The Live Activity intent does **not** need that variable bound a second time: the
+classifier stashes the expense text in the app's shared `UserDefaults`, and the
+intent reads it back. (An empty or miswired second binding would otherwise
+silently yield no amount with no error.) The classifier writes the invocation to
+the dispatcher's queue even when the app is not running, and the Live Activity
+intent starts the capsule the user can tap to open the app.
 
-So the Swift gate alone decides whether the app opens, and the JS
-`parseSucceeded` check decides whether Add Expense opens *pre-filled* (and
-navigates). If the two disagree — Swift says "expense" but `parseAnySms` finds no
-anchored amount — the app still comes forward, but no `/add` sheet appears.
-Non-expenses never reach the foreground intent at all, so they can never open the
-app. A credit is a non-expense: Swift dispatches `processSmsIncoming` and returns
-`false`, so the app is never opened, and the invocation waits in the native queue
-for review on the next launch (see §3).
+So the Swift gate alone decides whether a capsule appears, and the JS
+`parseSucceeded` check decides whether tapping through opens Add Expense
+*pre-filled* (and navigates). If the two disagree — Swift says "expense" but
+`parseAnySms` finds no anchored amount — the app still opens, but no `/add` sheet
+appears. Non-expenses never reach the Live Activity intent at all, so they can
+never produce a capsule. A credit is a non-expense: Swift dispatches
+`processSmsIncoming` and returns `false`, so no capsule appears, and the
+invocation waits in the native queue for review on the next launch (see §3).
 
 ### Where the parsing actually happens
 
@@ -66,12 +70,15 @@ expense path, in order:
 
 | Step | Code | Result |
 | --- | --- | --- |
-| Classifier runs | `ProcessSMSIntent.perform()` (`app-intents/ProcessSMSIntent.swift`), background | `isRejected()` then `isExpense()`; for an expense, `AppIntentDispatcher.shared.dispatch(name: "processSms", params: ["text": .string(messageText)])`; returns the `Bool` |
-| Open runs | `OpenExpenseSMSIntent.perform()` (same file), foreground, only when the classifier returned `true` | No parameters, no work — just brings the app up so JS can drain the queue |
-| JS handler receives | `useAppIntentDispatcher()` (`src/hooks/useAppIntentDispatcher.ts`), via `useAppIntents` from `expo-app-intents` | Calls `parseAnySms(text)`; only sets the intent when `parseSucceeded` |
+| Classifier runs | `ProcessSMSIntent.perform()` (`app-intents/ProcessSMSIntent.swift`), background | `isRejected()` then `isExpense()`; for an expense, stashes the raw text for the Live Activity intent (no JS dispatch); returns the `Bool` |
+| Capsule runs | `ShowExpenseCaptureIntent.perform()` (`app-intents/ShowExpenseCaptureIntent.swift`), background `LiveActivityIntent`, only when the classifier returned `true` | Starts the Dynamic Island / Lock Screen capsule (`amount` + `vendor` from `SmsDisplayParser`, category from the mirrored map) and records a **pending capture**; no app open |
+| Edit tapped | capsule `Link` → `expensetracker://add?data=…` → `useAddExpenseIntent` (`src/hooks/useAddExpenseIntent.ts`) | Parses, drops the pending capture, sets the SMS intent; `AddExpenseIntentProvider` routes to `/add` pre-filled |
+| Save tapped | `SaveExpenseCaptureIntent.perform()` (`app-intents/SaveExpenseCaptureIntent.swift`), background `LiveActivityIntent` | Ends the capsule, drops the pending capture, `dispatch("processSmsSave")` |
+| Save handled | `autoSaveCapture()` (`src/lib/pending-captures.ts`) via `useAppIntentDispatcher()` | Parses, resolves category (remembered → else "Unsorted"), `insertExpense`; no navigation |
+| Ignored/dismissed | `flushPendingCaptures()` (`src/lib/pending-captures.ts`) from `_layout.tsx` on foreground | Auto-logs every still-pending capture (iOS gives no swipe-away callback), then dismisses capsules |
 | Parse | `parseAnySms(rawText)` (`src/parsers/sms.ts`) | Fills `amount`, `merchant`, `occurredAt`, `bankSource`, `parseSucceeded` |
 | Route | `AddExpenseIntentProvider` (`src/hooks/add-expense-intent-provider.tsx`) | On an SMS intent, `router.navigate('/add')` from wherever the app was |
-| Save | `add.tsx` (`confirmAndSave`) | Writes `merchant`, `bank_source`, `raw_sms_text`, `occurred_at`, and `source: 'sms'` |
+| Save (reviewed) | `add.tsx` (`confirmAndSave`) | Writes `merchant`, `bank_source`, `raw_sms_text`, `occurred_at`, and `source: 'sms'`; dismisses the capsule |
 
 The credit path diverges only in the classifier and the JS handler; the receipt
 is always reviewed, never auto-filed:
@@ -121,7 +128,7 @@ Requirements:
 - A **development or release build** installed on the device — App Intents are
   registered at install time and **do not work in Expo Go**.
 - The app **opened at least once** after install, so iOS registers the
-  `Process Incoming SMS` and `Open Expense from SMS` actions.
+  `Process Incoming SMS` and `Show Expense Capture` actions.
 
 Confirm the app side works **before** touching Shortcuts, so that when something
 breaks you know which half is at fault:
@@ -165,24 +172,28 @@ Add an **If** action. Set the condition to
 the Run App Intent action; type `true` in the equal-to field). Everything in step
 1c goes **inside** this `If`.
 
-### 1c. Run App Intent — open (inside the If)
+### 1c. Run App Intent — Live Activity (inside the If)
 
-Add a second **Run App Intent**. Search for **"Open Expense from SMS"** (the
-title from `OpenExpenseSMSIntent`).
+Add a second **Run App Intent**. Search for **"Show Expense Capture"** (the
+title from `ShowExpenseCaptureIntent`).
 
-It has **no parameters** — the classifier already sent the text to JS. This
-action's only job is to bring the app up, so add it inside the `If` and leave it
-unconfigured.
+Leave its **Message Text** field **empty** — the classifier already stashed the
+text natively. This action's job is to start the Dynamic Island / Lock Screen
+capsule, during which the app stays closed.
 
 > `Shortcut Input` in a Message automation is the incoming message body.
 > The App Intent receives it as a typed `String` — no URL encoding, no `%`/`+`/`&`
 > bugs, no double-decoding issues.
 >
-> The split exists because `openAppWhenRun` is static: the app opens only when
-> the `If` above lets `Open Expense from SMS` run. The text only has to be wired
-> once, into the classifier; the foreground intent carries no input. Once it
-> runs, the JS handler drains the queued dispatch and navigates to `/add` only
-> when `parseAnySms` actually found an amount.
+> The split exists because `openAppWhenRun` is static: the capsule appears only
+> when the `If` above lets `Show Expense Capture` run. The text only has to be
+> wired once, into the classifier; the Live Activity intent reads the stashed
+> text instead of a second binding. Tapping the capsule opens the app, where the
+> JS handler drains the queued dispatch and navigates to `/add` only when
+> `parseAnySms` actually found an amount.
+>
+> `Show Expense Capture` is a `LiveActivityIntent`, which is why it may start a
+> Live Activity while the app is backgrounded. It requires **iOS 17.2 or later**.
 
 ### Also turn on the Share Sheet
 
@@ -239,8 +250,9 @@ automation and a nag.
    pick **Shortcut Input**. (Background classifier; never opens the app.)
 2. **Add Action** → **If** → set the condition to `Process Incoming SMS`
    **is** `true`.
-3. **Add Action** *inside* the `If` → search **Open Expense from SMS** (no
-   parameters; just adds the action). (Foreground; opens the app.)
+3. **Add Action** *inside* the `If` → search **Show Expense Capture** (leave
+   its Message Text empty; just adds the action). (Background Live Activity; the
+   app stays closed until you tap the capsule.)
 
 > In a Message automation the incoming message *is* the Shortcut Input, so the
 > classifier receives the raw SMS with no plumbing. Inlining is the reliable
@@ -258,13 +270,13 @@ automation and a nag.
 
 **Save.** Send yourself a text containing `Rs.` — or temporarily change the
 filter to something you can trigger on demand, test, then change it back. For an
-expense, the `If` passes and `Open Expense from SMS` opens the app; the Add sheet
-appears pre-filled once the JS parser runs. If the phone is locked, iOS may hold
-the app until you unlock, in which case the dispatch is queued and surfaces the
-next time you open the app (see §3). Credits, balances, OTPs, statements and
-promos never open anything. A credit is queued by the classifier as a
-`processSmsIncoming` dispatch and surfaces on the next launch as a `/receive`
-review (see §3).
+expense, the `If` passes and `Show Expense Capture` starts a Dynamic Island /
+Lock Screen capsule; the app stays closed. Tap the capsule and the Add sheet
+appears pre-filled once the JS parser runs. If the phone is locked, the capsule
+is not started and the dispatch is queued, surfacing the next time you open the
+app (see §3). Credits, balances, OTPs, statements and promos never produce a
+capsule. A credit is queued by the classifier as a `processSmsIncoming` dispatch
+and surfaces on the next launch as a `/receive` review (see §3).
 
 ---
 
@@ -276,14 +288,13 @@ Verified against Apple's own documentation:
   among the triggers that support it, since iOS 17.
 - The pair is deliberately split. `Process Incoming SMS` is declared
   `openAppWhenRun = false`, which Apple documents as running the app in the
-  background **without bringing its scenes up**. `Open Expense from SMS` is
-  declared `openAppWhenRun = true`, and the Shortcut runs it only when the
-  classifier returned `true`, so an expense pulls the app forward while a
-  non-expense never does. `openAppWhenRun` is a static property the OS
-  reads before `perform()` runs, so it cannot depend on the message — the
-  Shortcut's `If` is what makes the decision. A Live Activity / Dynamic Island
-  trigger remains the planned alternative for surfacing a capture without opening
-  the app (the README lists it under "Not yet built").
+  background **without bringing its scenes up**. `Show Expense Capture` is a
+  `LiveActivityIntent`, which Apple documents as the one kind of App Intent that
+  may start a Live Activity while the app is not in the foreground; the Shortcut
+  runs it only when the classifier returned `true`, so an expense produces a
+  capsule while a non-expense never does. `openAppWhenRun` is a static property
+  the OS reads before `perform()` runs, so it cannot depend on the message — the
+  Shortcut's `If` is what makes the decision.
 - Delivery is at-least-once: the same invocation can reach the handler more than
   once (for example if the app dies before it is removed from the queue).
 - A credit never opens the app. The classifier queues a `processSmsIncoming`
@@ -297,10 +308,10 @@ Verified against Apple's own documentation:
 Reported by users, **not** confirmed by Apple — treat as things to test on your
 device rather than facts:
 
-- **A locked phone may prompt, or just queue the capture.** `Open Expense from
-  SMS` asks iOS to run in the foreground, but a locked screen can require an
-  unlock before the app is shown. If you consistently trigger expenses with the
-  phone in your pocket, check this early.
+- **A locked phone may not show the capsule, and it may just queue the capture.**
+  `Show Expense Capture` runs in the background, but a locked screen can still
+  hold a Message automation until you unlock. If you consistently trigger
+  expenses with the phone in your pocket, check this early.
 - **"Run Immediately" can silently revert to "Ask Before Running" after an iOS
   update.** This is widely described as the single most common reason an
   automation stops working. If it worked for months and then stopped, look here
@@ -326,10 +337,10 @@ there.
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| App never opens for an expense SMS | Automation not firing, the Shortcut's `If` not passing, or Swift `isRejected()` / `isExpense()` returned false | Re-check **Run Immediately** (§3); confirm both `Process Incoming SMS` and `Open Expense from SMS` appear in Shortcuts' App Intent list and the `If` wraps the second one; rebuild after intent changes; confirm the message has a debit verb (`Sent`/`Spent`/`Paid`/`debited`…) and an `Rs`/`INR`/`₹` amount |
-| App opens but Add Expense never appears, or opens blank | The foreground intent ran, but JS `parseAnySms` found no anchored amount, so `parseSucceeded === false` and nothing navigates | Add/widen a debit+amount regex in `DEBIT_AMOUNT_PATTERNS` (`src/parsers/sms.ts`, §6), then rebuild. The app opening without a sheet is silent by design |
+| No capsule appears for an expense SMS | Automation not firing, the Shortcut's `If` not passing, or Swift `isRejected()` / `isExpense()` returned false | Re-check **Run Immediately** (§3); confirm both `Process Incoming SMS` and `Show Expense Capture` appear in Shortcuts' App Intent list and the `If` wraps the second one; rebuild after intent changes; confirm the message has a debit verb (`Sent`/`Spent`/`Paid`/`debited`…) and an `Rs`/`INR`/`₹` amount |
+| Capsule appears but tapping opens the app with no Add sheet | The tap foregrounded the app, but JS `parseAnySms` found no anchored amount, so `parseSucceeded === false` and nothing navigates | Add/widen a debit+amount regex in `DEBIT_AMOUNT_PATTERNS` (`src/parsers/sms.ts`, §6), then rebuild. The app opening without a sheet is silent by design |
 | Automation runs, but the parser receives an empty or wrong message | `Run Shortcut` dropped the trigger variable before it reached the called shortcut's input | Inline both App Intent actions in the automation, or set the `Run Shortcut` action's input to **Shortcut Input** (§2) |
-| A payment only captures when I later open the app | The phone was locked or iOS held the foreground request, so the dispatch queued | See §3; unlock, or enable **Privacy → Allow Running When Locked** if your iOS version exposes it |
+| A payment only captures when I later open the app | The phone was locked, so no capsule started and the dispatch queued | See §3; unlock, or enable **Privacy → Allow Running When Locked** if your iOS version exposes it |
 | Nothing fires while the phone is locked | Automation held for unlock | Turn on **Run Immediately**; enable **Privacy → Allow Running When Locked** if your iOS version exposes it (§3) |
 | Add Expense opens but merchant is blank | `MERCHANT_PATTERNS` didn't match this SMS shape | Add/widen a merchant regex in `src/parsers/sms.ts` (§6) |
 | Saved date is "now" instead of the transaction date | `OCCURRED_AT_PATTERNS` didn't match, or the date was rejected as impossible/future, so `add.tsx` fell back to the save time | Add a date pattern in `src/parsers/sms.ts` (§6) |
@@ -405,10 +416,15 @@ To add a new format:
    `REJECT_PATTERNS`. If you add or change a shape, update both sides — otherwise
    the classifier returns `false`, the Shortcut's `If` fails, and the message
    never reaches the JS parser (or, worse, Swift says `true` while `parseAnySms`
-   finds nothing, so the app opens with no Add sheet). A credit missed here fails
-   more quietly still: no invocation is queued, so nothing ever shows up in
-   `/receive`. Both sides match case-insensitively; keep that consistent.
-   Clearing the Swift gate is still not enough: the JS handler also requires
+   finds nothing, so the capsule appears but tapping opens the app with no Add
+   sheet). A credit missed here fails more quietly still: no invocation is
+   queued, so nothing ever shows up in `/receive`. Both sides match
+   case-insensitively; keep that consistent.
+   The **display** amount/vendor shown in the capsule mirror
+   `DEBIT_AMOUNT_PATTERNS` / `MERCHANT_PATTERNS` in
+   `app-intents/SmsDisplayParser.swift`. That copy is cosmetic only — if it
+   drifts, the capsule shows a blank or stale value, never a wrong save. Clearing
+   the Swift gate is still not enough: the JS handler also requires
    `parseSucceeded` for an expense, and caches the receipt for review on the
    credit path.
 5. Check the Shortcut filter still matches. The automation in §2 filters on

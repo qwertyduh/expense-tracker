@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import * as Linking from 'expo-linking';
 import { parseAnySms, BankSource, ParsedTransaction } from '../parsers';
+import { liveActivity } from '../lib/live-activity';
 
 export type AddExpenseIntent =
   | { source: 'manual'; prefill: null }
@@ -114,6 +115,10 @@ export function useAddExpenseIntent(): {
 
     const prefill = parseAnySms(rawText);
     const bankSource = prefill.bankSource ?? 'unknown';
+
+    // Opening Add from the capsule is a review, not an ignore: drop the pending
+    // capture so the foreground flush can't also auto-log it.
+    void liveActivity.removePendingCapture(rawText);
 
     setSmsIntentState(prefill, rawText, bankSource);
   }

@@ -28,10 +28,17 @@ struct ProcessSMSIntent: AppIntent {
         // (not from the foreground intent) so the raw text is wired once and the
         // invocation is queued even if the app is not running yet.
         if isExpense(text: messageText) {
-            await AppIntentDispatcher.shared.dispatch(
-                name: "processSms",
-                params: ["text": .string(messageText)]
-            )
+            // Stash the raw text for the Live Activity intent that runs next, so the
+            // Shortcut does not have to bind the message text a second time. Both
+            // intents run in this process, so UserDefaults.standard is shared.
+            //
+            // Deliberately no `processSms` dispatch: the capsule is the surface now.
+            // The Edit link carries the text back over a deep link, and Save dispatches
+            // `processSmsSave`. Queuing a `processSms` here too would open /add on
+            // every later app launch, even when the user never tapped the capsule.
+            if #available(iOS 17.0, *) {
+                UserDefaults.standard.set(messageText, forKey: ExpenseCaptureBridge.stashedTextKey)
+            }
             return .result(value: true)
         }
 
