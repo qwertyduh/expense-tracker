@@ -1,4 +1,9 @@
+import { forgetHandle, normalizeHandle, rememberHandle } from './person-handles';
 import { db } from './schema';
+
+// Thin view over person_handles, restricted to kind='upi'. Kept because the
+// receive flow talks about "the sender's UPI id" specifically; names are learned
+// through person-handles directly.
 
 export interface UpiAliasRow {
   upi_id: string;
@@ -7,61 +12,47 @@ export interface UpiAliasRow {
   updated_at: string;
 }
 
-// UPI ids are case-insensitive, so every read and write normalizes to lowercase
-// (otherwise "Anushka@okhdfc" and "anushka@okhdfc" would become two rows).
-function normalize(upiId: string): string {
-  return upiId.trim().toLowerCase();
-}
-
 export function getUpiAlias(upiId: string): UpiAliasRow | null {
-  const id = normalize(upiId);
-  if (!id) return null;
+  const key = normalizeHandle(upiId);
+  if (!key) return null;
   return (
     db.getFirstSync<UpiAliasRow>(
-      `SELECT a.upi_id, a.person_id, p.display_name AS person_name, a.updated_at
-       FROM upi_aliases a
-       LEFT JOIN people p ON p.id = a.person_id
-       WHERE a.upi_id = ? LIMIT 1`,
-      id
+      `SELECT h.label AS upi_id, h.person_id, p.display_name AS person_name, h.updated_at
+       FROM person_handles h
+       JOIN people p ON p.id = h.person_id
+       WHERE h.handle_key = ? AND h.kind = 'upi' LIMIT 1`,
+      key
     ) ?? null
   );
 }
 
 export function getPersonIdForUpi(upiId: string): string | null {
-  const id = normalize(upiId);
-  if (!id) return null;
+  const key = normalizeHandle(upiId);
+  if (!key) return null;
   return (
     db.getFirstSync<{ person_id: string }>(
-      'SELECT person_id FROM upi_aliases WHERE upi_id = ? LIMIT 1',
-      id
+      `SELECT person_id FROM person_handles
+       WHERE handle_key = ? AND kind = 'upi' LIMIT 1`,
+      key
     )?.person_id ?? null
   );
 }
 
 // Remembers (or updates) which person a UPI id belongs to.
 export function rememberUpiAlias(upiId: string, personId: string): void {
-  const id = normalize(upiId);
-  if (!id || !personId) return;
-  const now = new Date().toISOString();
-  db.runSync(
-    `INSERT INTO upi_aliases (upi_id, person_id, updated_at)
-     VALUES (?, ?, ?)
-     ON CONFLICT(upi_id) DO UPDATE SET person_id = excluded.person_id, updated_at = excluded.updated_at`,
-    id,
-    personId,
-    now
-  );
+  rememberHandle(upiId, personId, 'upi');
 }
 
 export function forgetUpiAlias(upiId: string): void {
-  db.runSync('DELETE FROM upi_aliases WHERE upi_id = ?', normalize(upiId));
+  forgetHandle(upiId);
 }
 
 export function listUpiAliases(): UpiAliasRow[] {
   return db.getAllSync<UpiAliasRow>(
-    `SELECT a.upi_id, a.person_id, p.display_name AS person_name, a.updated_at
-     FROM upi_aliases a
-     LEFT JOIN people p ON p.id = a.person_id
-     ORDER BY a.updated_at DESC`
+    `SELECT h.label AS upi_id, h.person_id, p.display_name AS person_name, h.updated_at
+     FROM person_handles h
+     JOIN people p ON p.id = h.person_id
+     WHERE h.kind = 'upi'
+     ORDER BY h.updated_at DESC`
   );
 }

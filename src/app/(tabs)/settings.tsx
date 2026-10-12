@@ -16,8 +16,13 @@ import {
   listMerchantMemory,
   type MerchantMemoryRow,
 } from '@/db/merchant-memory';
-import { getSelf, updateSelfName } from '@/db/people';
-import { forgetUpiAlias, listUpiAliases, type UpiAliasRow } from '@/db/upi-aliases';
+import { getSelf, renamePerson, updateSelfName } from '@/db/people';
+import {
+  forgetHandle,
+  listPeopleWithHandles,
+  type PersonHandleRow,
+  type PersonWithHandles,
+} from '@/db/person-handles';
 import { paymentDetection, type DetectionMode } from '@/lib/payment-detection';
 import { useTheme } from '@/hooks/use-theme';
 
@@ -31,8 +36,10 @@ export default function SettingsScreen() {
   const theme = useTheme();
   const [selfName, setSelfName] = useState('');
   const [memory, setMemory] = useState<MerchantMemoryRow[]>([]);
-  const [upiAliases, setUpiAliases] = useState<UpiAliasRow[]>([]);
+  const [people, setPeople] = useState<PersonWithHandles[]>([]);
   const [editorOpen, setEditorOpen] = useState(false);
+  // null = editing the self name; otherwise the non-self person being renamed.
+  const [editorPersonId, setEditorPersonId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [detectionEnabled, setDetectionEnabled] = useState(true);
   const [mode, setMode] = useState<DetectionMode>('auto');
@@ -41,7 +48,7 @@ export default function SettingsScreen() {
   const reload = useCallback(() => {
     setSelfName(getSelf()?.display_name ?? '');
     setMemory(listMerchantMemory());
-    setUpiAliases(listUpiAliases());
+    setPeople(listPeopleWithHandles());
     if (paymentDetection.available) {
       paymentDetection.isEnabled().then(setDetectionEnabled).catch(() => {});
       paymentDetection.getMode().then(setMode).catch(() => {});
@@ -71,9 +78,24 @@ export default function SettingsScreen() {
     paymentDetection.setMode(next).catch(() => {});
   };
 
+  const openSelfEditor = () => {
+    setDraft(selfName);
+    setEditorPersonId(null);
+    setEditorOpen(true);
+  };
+
+  const openPersonEditor = (person: PersonWithHandles['person']) => {
+    setDraft(person.display_name);
+    setEditorPersonId(person.id);
+    setEditorOpen(true);
+  };
+
   const saveName = () => {
     const name = draft.trim();
-    if (name) updateSelfName(name);
+    if (name) {
+      if (editorPersonId) renamePerson(editorPersonId, name);
+      else updateSelfName(name);
+    }
     setEditorOpen(false);
     reload();
   };
@@ -92,14 +114,15 @@ export default function SettingsScreen() {
     ]);
   };
 
-  const forgetAlias = (upiId: string) => {
-    Alert.alert(`Forget "${upiId}"?`, 'The next payment from it will ask for a name.', [
+  const removeHandle = (handle: PersonHandleRow) => {
+    const what = handle.kind === 'upi' ? `UPI id "${handle.label}"` : `name "${handle.label}"`;
+    Alert.alert(`Remove ${what}?`, 'The next payment that matches it will ask again.', [
       { text: 'Cancel', style: 'cancel' },
       {
-        text: 'Forget',
+        text: 'Remove',
         style: 'destructive',
         onPress: () => {
-          forgetUpiAlias(upiId);
+          forgetHandle(handle.handle_key);
           reload();
         },
       },
@@ -130,11 +153,7 @@ export default function SettingsScreen() {
         <ThemedText type="small" themeColor="textSecondary">
           Your name
         </ThemedText>
-        <Pressable
-          onPress={() => {
-            setDraft(selfName);
-            setEditorOpen(true);
-          }}>
+        <Pressable onPress={openSelfEditor}>
           <ThemedText type="subtitle">{selfName || 'Set your name'}</ThemedText>
         </Pressable>
       </Card>
@@ -223,28 +242,38 @@ export default function SettingsScreen() {
       )}
 
       <View style={styles.sectionHeader}>
-        <ThemedText type="smallBold">UPI names</ThemedText>
+        <ThemedText type="smallBold">People</ThemedText>
       </View>
-      {upiAliases.length === 0 ? (
+      {people.length === 0 ? (
         <EmptyState
-          title="No UPI names yet"
-          subtitle="Name a sender once and their UPI id is remembered for next time."
+          title="No people yet"
+          subtitle="Name a sender once and their UPI id and name are remembered. Add more by naming them again."
         />
       ) : (
         <Card style={styles.listCard}>
-          {upiAliases.map((alias) => (
-            <View key={alias.upi_id} style={[styles.row, { borderColor: theme.border }]}>
-              <View style={styles.rowMain}>
-                <ThemedText type="default">{alias.person_name ?? 'Unknown'}</ThemedText>
-                <ThemedText type="small" themeColor="textSecondary">
-                  {alias.upi_id}
-                </ThemedText>
-              </View>
-              <Pressable onPress={() => forgetAlias(alias.upi_id)} hitSlop={8}>
-                <ThemedText type="small" style={{ color: theme.danger }}>
-                  Forget
-                </ThemedText>
+          {people.map(({ person, handles }) => (
+            <View key={person.id} style={[styles.personBlock, { borderColor: theme.border }]}>
+              <Pressable onPress={() => openPersonEditor(person)} hitSlop={4}>
+                <ThemedText type="default">{person.display_name}</ThemedText>
               </Pressable>
+              {handles.length === 0 ? (
+                <ThemedText type="small" themeColor="textSecondary">
+                  No ids or names learned yet
+                </ThemedText>
+              ) : (
+                handles.map((handle) => (
+                  <View key={handle.handle_key} style={styles.handleRow}>
+                    <ThemedText type="small" themeColor="textSecondary" style={styles.handleLabel}>
+                      {handle.kind === 'upi' ? `UPI · ${handle.label}` : `Name · ${handle.label}`}
+                    </ThemedText>
+                    <Pressable onPress={() => removeHandle(handle)} hitSlop={8}>
+                      <ThemedText type="small" style={{ color: theme.danger }}>
+                        Remove
+                      </ThemedText>
+                    </Pressable>
+                  </View>
+                ))
+              )}
             </View>
           ))}
         </Card>
@@ -259,7 +288,7 @@ export default function SettingsScreen() {
       <Modal visible={editorOpen} transparent animationType="fade" onRequestClose={() => setEditorOpen(false)}>
         <View style={styles.backdrop}>
           <Card style={styles.editor}>
-            <ThemedText type="smallBold">Your name</ThemedText>
+            <ThemedText type="smallBold">{editorPersonId ? 'Rename person' : 'Your name'}</ThemedText>
             <TextInput
               value={draft}
               onChangeText={setDraft}
@@ -321,6 +350,21 @@ const styles = StyleSheet.create({
   rowMain: {
     flexShrink: 1,
     gap: Spacing.half,
+  },
+  personBlock: {
+    paddingVertical: Spacing.three,
+    gap: Spacing.half,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  handleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.three,
+    paddingLeft: Spacing.two,
+  },
+  handleLabel: {
+    flexShrink: 1,
   },
   backdrop: {
     flex: 1,

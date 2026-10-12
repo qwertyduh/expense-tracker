@@ -1,0 +1,43 @@
+diff --git a/node_modules/react-native/Libraries/Text/TextInput/RCTBaseTextInputView.mm b/node_modules/react-native/Libraries/Text/TextInput/RCTBaseTextInputView.mm
+index 9fa7b92..a3da4e6 100644
+--- a/node_modules/react-native/Libraries/Text/TextInput/RCTBaseTextInputView.mm
++++ b/node_modules/react-native/Libraries/Text/TextInput/RCTBaseTextInputView.mm
+@@ -765,10 +765,13 @@ RCT_NOT_IMPLEMENTED(-(instancetype)initWithFrame : (CGRect)frame)
+   BOOL containsKeyType = [returnKeyTypesSet containsObject:@(returnKeyType)];
+   BOOL containsInputAccessoryViewButtonLabel = inputAccessoryViewButtonLabel != nil;
+ 
++  // PATCH: also honor an explicit `inputAccessoryViewButtonLabel` on ANY keyboard,
++  // so text keyboards get the same Done toolbar when a label is supplied.
+   BOOL shouldHaveInputAccessoryView =
+-      (keyboardType == UIKeyboardTypeNumberPad || keyboardType == UIKeyboardTypePhonePad ||
+-       keyboardType == UIKeyboardTypeDecimalPad || keyboardType == UIKeyboardTypeASCIICapableNumberPad) &&
+-      (containsKeyType || containsInputAccessoryViewButtonLabel);
++      containsInputAccessoryViewButtonLabel ||
++      ((keyboardType == UIKeyboardTypeNumberPad || keyboardType == UIKeyboardTypePhonePad ||
++        keyboardType == UIKeyboardTypeDecimalPad || keyboardType == UIKeyboardTypeASCIICapableNumberPad) &&
++       containsKeyType);
+ 
+   if (_hasInputAccessoryView == shouldHaveInputAccessoryView) {
+     return;
+diff --git a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
+index 917dc6d..9acef2b 100644
+--- a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
++++ b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
+@@ -660,10 +660,14 @@ static NSSet<NSNumber *> *returnKeyTypesSet;
+ 
+   // These keyboard types (all are number pads) don't have a "returnKey" button by default,
+   // so we create an `inputAccessoryView` with this button for them.
++  //
++  // PATCH: also honor an explicit `inputAccessoryViewButtonLabel` on ANY keyboard,
++  // so text keyboards get the same Done toolbar when a label is supplied.
+   BOOL shouldHaveInputAccessoryView =
+-      (keyboardType == UIKeyboardTypeNumberPad || keyboardType == UIKeyboardTypePhonePad ||
+-       keyboardType == UIKeyboardTypeDecimalPad || keyboardType == UIKeyboardTypeASCIICapableNumberPad) &&
+-      (containsKeyType || containsInputAccessoryViewButtonLabel);
++      containsInputAccessoryViewButtonLabel ||
++      ((keyboardType == UIKeyboardTypeNumberPad || keyboardType == UIKeyboardTypePhonePad ||
++        keyboardType == UIKeyboardTypeDecimalPad || keyboardType == UIKeyboardTypeASCIICapableNumberPad) &&
++       containsKeyType);
+ 
+   if (_hasInputAccessoryView == shouldHaveInputAccessoryView) {
+     return;

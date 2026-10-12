@@ -18,6 +18,7 @@ import {
   type ExpenseRow,
   type ParticipantWithBalance,
 } from '@/db/expenses';
+import { rememberMerchant } from '@/db/merchant-memory';
 import { useAddExpenseIntentContext } from '@/hooks/add-expense-intent-provider';
 import { useTheme } from '@/hooks/use-theme';
 import { formatCurrency, formatDateTime } from '@/lib/format';
@@ -97,12 +98,13 @@ export default function ExpenseDetailScreen() {
     const totalValue = parseFloat(total) || 0;
     const shareValue = parseFloat(share) || 0;
     if (totalValue <= 0 || !categoryId) return;
+    const trimmedMerchant = merchant.trim() || null;
     updateExpense(expense.id, {
       categoryId,
       totalAmount: totalValue,
       selfShare: shareValue,
       label: label.trim() || null,
-      merchant: merchant.trim() || null,
+      merchant: trimmedMerchant,
       occurredAt: expense.occurred_at,
     });
     // Persist edited participant shares alongside the row update.
@@ -113,6 +115,11 @@ export default function ExpenseDetailScreen() {
       }))
       .filter((person) => person.name.length > 0);
     setExpenseSplit(expense.id, shareValue, nextParticipants);
+    // Re-filing a vendor must retrain its memory too, so the next payment from
+    // it opens with this new category instead of the one first learned.
+    if (trimmedMerchant) {
+      rememberMerchant(trimmedMerchant, categoryId, nextParticipants.length + 1);
+    }
     setEditing(false);
     load();
   };

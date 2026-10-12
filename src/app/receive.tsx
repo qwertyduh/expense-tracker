@@ -12,6 +12,7 @@ import {
   markIncomingReceipt,
 } from '@/db/incoming-receipts';
 import { insertSettlement, listOutstandingShares, OutstandingShare } from '@/db/settlements';
+import { getPersonByHandle, rememberHandle } from '@/db/person-handles';
 import { getUpiAlias, rememberUpiAlias } from '@/db/upi-aliases';
 import { useKeyboardHeight } from '@/hooks/use-keyboard';
 import { ReceiveIntent, useReceiveIntent } from '@/hooks/receive-intent';
@@ -75,14 +76,27 @@ function candidateForExpense(expenseId: string): MatchCandidate | null {
   return share ? toCandidate(share) : null;
 }
 
-// Resolves a person name for an incoming SMS: a remembered UPI alias wins, then
-// the parsed sender name, then anything stored on the receipt.
+// Resolves a person name for an incoming SMS: a remembered UPI alias wins, then a
+// name spelling already learned for a person, then anything stored on the
+// receipt / parsed from the message.
 function resolvePersonName(upiId: string | null, fallback: string | null): string {
   if (upiId) {
     const alias = getUpiAlias(upiId);
     if (alias?.person_name) return alias.person_name;
   }
+  if (fallback) {
+    const person = getPersonByHandle(fallback);
+    if (person) return person.display_name;
+  }
   return fallback ?? '';
+}
+
+// Learn every handle the receipt gave us — the sender's UPI id and the name the
+// person was confirmed under — so a second VPA or a differently formatted name
+// resolves to the same person next time.
+function rememberSender(personId: string, upiId: string | null, name: string): void {
+  if (upiId) rememberUpiAlias(upiId, personId);
+  if (name.trim()) rememberHandle(name, personId, 'name');
 }
 
 type InitialState = {
@@ -269,8 +283,9 @@ export default function ReceiveScreen() {
         amount: allocation.amount,
       })),
     });
-    // Learn "anushka@okhdfc -> Anushka" so the next receipt pre-fills.
-    if (upiId) rememberUpiAlias(upiId, personId);
+    // Learn "anushka@okhdfc -> Anushka" (and the name spelling) so the next
+    // receipt from the same person pre-fills, whichever VPA or format it uses.
+    rememberSender(personId, upiId, effectivePerson);
     if (receiptId) markIncomingReceipt(receiptId, 'linked');
     setSaved(true);
     timer.current = setTimeout(goHome, SAVED_DELAY_MS);
@@ -321,7 +336,7 @@ export default function ReceiveScreen() {
         amount: allocation.amount,
       })),
     });
-    if (upiId) rememberUpiAlias(upiId, personId);
+    rememberSender(personId, upiId, effectivePerson);
     if (receiptId) markIncomingReceipt(receiptId, 'linked');
     clear();
     router.replace({

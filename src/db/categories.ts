@@ -77,7 +77,12 @@ export function reorderCategories(orderedIds: string[]): void {
 }
 
 export function deleteCategory(id: string): void {
-  db.runSync('DELETE FROM categories WHERE id = ?', id);
+  db.withTransactionSync(() => {
+    // A learned vendor pointing at this category must not block the delete or
+    // leave a stale mapping behind; drop it so the vendor simply asks again.
+    db.runSync('DELETE FROM merchant_memory WHERE category_id = ?', id);
+    db.runSync('DELETE FROM categories WHERE id = ?', id);
+  });
 }
 
 export function countExpensesForCategory(id: string): number {

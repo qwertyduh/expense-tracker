@@ -10,6 +10,18 @@ describe('parseIncomingSms', () => {
       ['You received Rs.500 from Anushka Gupta on 28/08/26', 500, 'Anushka Gupta'],
       ['Received Rs. 1,200 from Rohan by UPI', 1200, 'Rohan'],
       ['Credited with Rs 250', 250, null],
+      ['Credit of Rs.500 to your A/c', 500, null],
+      ['Received from Rohan Rs.500', 500, 'Rohan'],
+      ['Received from Anushka Gupta: Rs.500', 500, 'Anushka Gupta'],
+      // FamApp (Trio) credit shape: "You received Rs.1.0 from ANUSHKA  GUPTA with
+      // txn ID ... Your FamX a/c balance is Rs.1939.54 on FamApp by Trio". The
+      // trailing balance must not be read as the amount, and the double space in
+      // the sender name must collapse.
+      [
+        'You received Rs.1.0 from ANUSHKA  GUPTA with txn ID FMPIB6747302377. Your FamX a/c balance is Rs.1939.54 on FamApp by Trio',
+        1,
+        'ANUSHKA GUPTA',
+      ],
     ];
 
     for (const [raw, amount, senderName] of cases) {
@@ -63,6 +75,17 @@ describe('parseIncomingSms', () => {
 
   it('leaves upiId null when there is no VPA', () => {
     expect(parseIncomingSms('Rs.500 received from Anushka Gupta').upiId).toBeNull();
+  });
+
+  it('tags the FamApp credit shape and ignores its trailing balance', () => {
+    const raw =
+      'You received Rs.1.0 from ANUSHKA  GUPTA with txn ID FMPIB6747302377. Your FamX a/c balance is Rs.1939.54 on FamApp by Trio';
+    const result = parseIncomingSms(raw);
+    expect(result.amount).toBe(1);
+    expect(result.senderName).toBe('ANUSHKA GUPTA');
+    expect(result.upiId).toBeNull();
+    expect(result.bankSource).toBe('fampapp');
+    expect(result.parseSucceeded).toBe(true);
   });
 });
 

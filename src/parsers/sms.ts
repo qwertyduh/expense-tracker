@@ -36,16 +36,19 @@ const CREDIT_AMOUNT_PATTERNS = [
   /(?:Rs\.?|INR|₹)\s?([\d,]+(?:\.\d+)?)\s*(?:has\s+been\s+|is\s+|was\s+)?(?:credited|received|deposited|refunded|added)\b/i,
   // credit verb → amount: "credited with Rs.5,000"
   /\bcredited\s+with\s+(?:Rs\.?|INR|₹)\s?([\d,]+(?:\.\d+)?)/i,
+  // noun form: "Credit of Rs.500 to your A/c"
+  /\bcredit\s+of\s+(?:Rs\.?|INR|₹)\s?([\d,]+(?:\.\d+)?)/i,
   // verb → amount with a short gap: "You received Rs.500", "Received Rs. 1,200"
   /\b(?:Received|Credited|Deposited|Refunded|You\s+received)\b[^.\n]{0,40}?(?:Rs\.?|INR|₹)\s?([\d,]+(?:\.\d+)?)/i,
 ] as const;
 
 // Who sent the money, for the UPI shapes ("received from Anushka Gupta"). The
-// lookahead stops the name at a trailing noise word or sentence break so it
-// never swallows the reference, the date or the rest of the sentence.
+// lookahead stops the name at a trailing noise word, an amount ("Rohan Rs.500"),
+// a following colon ("Anushka Gupta: Rs.500") or a sentence break so it never
+// swallows the reference, the date or the amount.
 const SENDER_NAME_PATTERNS = [
-  /\bfrom\s+([A-Za-z][A-Za-z '-]*?)(?=\s+(?:on|by|with|ref|via|to|for|at)\b|[.,;\n]|$)/i,
-  /\bby\s+([A-Za-z][A-Za-z '-]*?)(?=\s+(?:on|by|with|ref|via|to|for|at)\b|[.,;\n]|$)/i,
+  /\bfrom\s+([A-Za-z][A-Za-z '-]*?)(?=\s+(?:on|by|with|ref|via|to|for|at|rs|inr)\b|[.,;:\n]|$)/i,
+  /\bby\s+([A-Za-z][A-Za-z '-]*?)(?=\s+(?:on|by|with|ref|via|to|for|at|rs|inr)\b|[.,;:\n]|$)/i,
 ] as const;
 
 // A UPI id / VPA: "anushka@okhdfc", "9876543210@ybl". Used to key the alias
@@ -202,7 +205,13 @@ export function parseIncomingSms(raw: string, now: Date = new Date()): ParsedInc
   for (const regex of SENDER_NAME_PATTERNS) {
     const match = text.match(regex);
     if (!match) continue;
-    const candidate = match[1].trim().replace(/[.,;:'-]+$/, '').trim();
+    // Collapse runs of whitespace ("ANUSHKA  GUPTA" → "ANUSHKA GUPTA") before
+    // stripping trailing punctuation, so a messy SMS name becomes one clean token.
+    const candidate = match[1]
+      .trim()
+      .replace(/\s+/g, ' ')
+      .replace(/[.,;:'-]+$/, '')
+      .trim();
     if (candidate && !/^your\b/i.test(candidate)) {
       senderName = candidate;
       break;

@@ -98,9 +98,28 @@ CREATE TABLE IF NOT EXISTS settlement_allocations (
 -- Remembers a UPI id (VPA) against a person's custom display name, so a credit
 -- from "anushka@okhdfc" auto-fills "Anushka" next time instead of asking. Stored
 -- lowercased; UPI ids are case-insensitive.
+--
+-- Superseded by person_handles, which also covers name variants. Kept only as a
+-- migration source (see migrateUpiAliasesToHandles); nothing reads or writes it
+-- anymore.
 CREATE TABLE IF NOT EXISTS upi_aliases (
   upi_id TEXT PRIMARY KEY,
   person_id TEXT NOT NULL REFERENCES people(id),
+  updated_at TEXT NOT NULL
+);
+
+-- Every handle that identifies a person: a UPI id (VPA) or a name spelling they
+-- are known by. handle_key is the normalized form (lowercased, whitespace
+-- collapsed), so "anushka@okhdfc"/"Anushka@okhdfc" and "Anushka  Gupta"/
+-- "anushka gupta" each resolve to one row. A person can have many handles, and a
+-- known handle is how an incoming sender is recognized across banks/apps or a
+-- differently formatted name.
+CREATE TABLE IF NOT EXISTS person_handles (
+  handle_key TEXT PRIMARY KEY,
+  person_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK(kind IN ('name', 'upi')),
+  label TEXT NOT NULL,
+  created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 
@@ -121,4 +140,40 @@ CREATE TABLE IF NOT EXISTS incoming_receipts (
 
 export function initDatabase(): void {
   db.execSync(SCHEMA_SQL);
+  migrateUpiAliasesToHandles();
+}
+
+// One-time fold of the legacy upi_aliases table into person_handles. Guarded on
+// person_handles being empty, so it runs at most once and a handle the user
+// later removes is never resurrected on the next launch. The copy runs inside a
+// transaction, so an interrupted upgrade leaves it all-or-nothing rather than
+// half-migrated with the guard then blocking the rest.
+function migrateUpiAliasesToHandles(): void {
+  const hasHandles = db.getFirstSync<{ one: number }>(
+    'SELECT 1 AS one FROM person_handles LIMIT 1'
+  );
+  if (hasHandles) return;
+
+  const legacy = db.getAllSync<{ upi_id: string; person_id: string; updated_at: string }>(
+    'SELECT upi_id, person_id, updated_at FROM upi_aliases'
+  );
+  if (legacy.length === 0) return;
+
+  const now = new Date().toISOString();
+  db.withTransactionSync(() => {
+    for (const row of legacy) {
+      const key = row.upi_id.trim().toLowerCase();
+      if (!key) continue;
+      db.runSync(
+        `INSERT OR IGNORE INTO person_handles
+           (handle_key, person_id, kind, label, created_at, updated_at)
+         VALUES (?, ?, 'upi', ?, ?, ?)`,
+        key,
+        row.person_id,
+        row.upi_id,
+        now,
+        row.updated_at ?? now
+      );
+    }
+  });
 }

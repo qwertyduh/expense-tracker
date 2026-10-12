@@ -7,13 +7,19 @@ a **Message automation** in Shortcuts runs an **App Intent** with the message te
 bank SMS arrives
    → Message automation fires (no confirmation tap)
    → Shortcut runs "Process Incoming SMS"  (background classifier, never opens app)
-   → Swift isRejected()  → OTP/statement?        → return false (dies silently)
-   → Swift isExpense()   → no debit + amount?    → return false (Shortcut If ends)
-   → true → AppIntentDispatcher.dispatch("processSms", text)   (queued for JS)
-              → If result is true:
-                   Shortcut runs "Open Expense from SMS" (foreground, opens the app)
-                   → JS useAppIntents drains the queue, runs parseAnySms(text)
-                   → parseSucceeded? → setSmsIntent → navigate to /add pre-filled
+   → Swift isRejected()  → OTP/statement?   → return false (dies silently)
+   → Swift isExpense()   → debit + amount?  → dispatch("processSms")         → return true
+   → Swift isCredit()    → credit + amount? → dispatch("processSmsIncoming") → return false
+
+EXPENSE (classifier returned true)
+   → Shortcut's If passes → runs "Open Expense from SMS" (foreground, opens the app)
+   → JS useAppIntents drains the queue, runs parseAnySms(text)
+   → parseSucceeded? → setSmsIntent → navigate to /add pre-filled
+
+CREDIT (classifier returned false; app NOT opened)
+   → Shortcut's If fails, nothing else runs; invocation waits in the native queue
+   → next app launch: JS drains it, runs parseIncomingSms(text)
+   → insertIncomingReceipt + setReceiveIntent → navigate to /receive to review
 ```
 
 Nothing is parsed inside the Shortcut. It is a dumb pipe; a new bank's message
@@ -25,9 +31,10 @@ a single one. `openAppWhenRun` is a static property the OS reads before
 that decision into the Shortcut's `If`:
 
 - **`Process Incoming SMS`** (`ProcessSMSIntent`) runs with
-  `openAppWhenRun = false`. It applies the native `isRejected()` / `isExpense()`
-  gate, returns a `Bool`, and — for an expense only — dispatches the raw text to
-  JS. It never opens the app.
+  `openAppWhenRun = false`. It applies the native `isRejected()` → `isExpense()`
+  → `isCredit()` gate, returns a `Bool`, and dispatches the raw text to JS —
+  `processSms` for an expense, `processSmsIncoming` for a credit. It never opens
+  the app.
 - **`Open Expense from SMS`** (`OpenExpenseSMSIntent`) runs with
   `openAppWhenRun = true`, has **no parameters**, and does no work: it only
   brings the app up. The Shortcut runs it only when the classifier returned
@@ -46,12 +53,16 @@ So the Swift gate alone decides whether the app opens, and the JS
 navigates). If the two disagree — Swift says "expense" but `parseAnySms` finds no
 anchored amount — the app still comes forward, but no `/add` sheet appears.
 Non-expenses never reach the foreground intent at all, so they can never open the
-app.
+app. A credit is a non-expense: Swift dispatches `processSmsIncoming` and returns
+`false`, so the app is never opened, and the invocation waits in the native queue
+for review on the next launch (see §3).
 
 ### Where the parsing actually happens
 
-One parser handles every bank SMS: `parseAnySms()` in `src/parsers/sms.ts`.
-The full path, in order:
+Two parsers share `src/parsers/sms.ts`: `parseAnySms()` for debits (expenses)
+and `parseIncomingSms()` for credits (repayments). They are deliberately
+separate, so a debit can never be read as money-in or vice versa. The full
+expense path, in order:
 
 | Step | Code | Result |
 | --- | --- | --- |
@@ -61,6 +72,17 @@ The full path, in order:
 | Parse | `parseAnySms(rawText)` (`src/parsers/sms.ts`) | Fills `amount`, `merchant`, `occurredAt`, `bankSource`, `parseSucceeded` |
 | Route | `AddExpenseIntentProvider` (`src/hooks/add-expense-intent-provider.tsx`) | On an SMS intent, `router.navigate('/add')` from wherever the app was |
 | Save | `add.tsx` (`confirmAndSave`) | Writes `merchant`, `bank_source`, `raw_sms_text`, `occurred_at`, and `source: 'sms'` |
+
+The credit path diverges only in the classifier and the JS handler; the receipt
+is always reviewed, never auto-filed:
+
+| Step | Code | Result |
+| --- | --- | --- |
+| Classifier runs | `ProcessSMSIntent.perform()` | `isRejected()` then `isExpense()`; if neither, `isCredit()` — for a credit, `dispatch(name: "processSmsIncoming", …)`; returns `false` so the app is not opened |
+| JS handler receives | `useAppIntentDispatcher()` | Calls `parseIncomingSms(text)`, caches the raw text via `insertIncomingReceipt`, then `setReceiveIntent({ source: 'sms', … })` |
+| Parse | `parseIncomingSms(rawText)` (`src/parsers/sms.ts`) | Fills `amount`, `senderName`, `upiId`, `occurredAt`, `bankSource`, `parseSucceeded` |
+| Route | `AddExpenseIntentProvider` | On a receive intent, `router.navigate('/receive')` once a scene is active |
+| Review & save | `receive.tsx` | Resolves the person (remembered handle — UPI id or name spelling — → parsed name), then `insertSettlement` + `rememberSender` (learns the UPI id and name spelling) |
 
 Three details worth knowing before you debug anything:
 
@@ -131,9 +153,10 @@ Tap the **Message Text** field and pick **Shortcut Input** from the variable row
 below). Do **not** add a **URL Encode** step on this path: the value is a typed
 `String`, not a URL.
 
-This action is the background classifier. It returns `true` for expenses,
-`false` for everything else (credits, balances, OTPs, statements, promos), and
-never opens the app.
+This action is the background classifier. It returns `true` for expenses and
+`false` for everything else, and never opens the app. Expenses dispatch
+`processSms`; credits dispatch `processSmsIncoming` (queued for review, app stays
+closed); balances, OTPs, statements and promos dispatch nothing at all.
 
 ### 1b. If — gate on the classifier
 
@@ -239,7 +262,9 @@ expense, the `If` passes and `Open Expense from SMS` opens the app; the Add shee
 appears pre-filled once the JS parser runs. If the phone is locked, iOS may hold
 the app until you unlock, in which case the dispatch is queued and surfaces the
 next time you open the app (see §3). Credits, balances, OTPs, statements and
-promos end at the background classifier and never open anything.
+promos never open anything. A credit is queued by the classifier as a
+`processSmsIncoming` dispatch and surfaces on the next launch as a `/receive`
+review (see §3).
 
 ---
 
@@ -261,6 +286,11 @@ Verified against Apple's own documentation:
   the app (the README lists it under "Not yet built").
 - Delivery is at-least-once: the same invocation can reach the handler more than
   once (for example if the app dies before it is removed from the queue).
+- A credit never opens the app. The classifier queues a `processSmsIncoming`
+  invocation and returns `false`, so the repayment surfaces only when you next
+  open the app (or bring it to the foreground) and `useAppIntentDispatcher`
+  drains the queue into `/receive`. A credit that arrives while you are already
+  using the app surfaces immediately; one that arrives while it is closed waits.
 - Apple's own caveat: turning off "Ask Before Running" covers the *trigger*, and
   you "may also need to set individual actions to run automatically."
 
@@ -304,6 +334,9 @@ there.
 | Add Expense opens but merchant is blank | `MERCHANT_PATTERNS` didn't match this SMS shape | Add/widen a merchant regex in `src/parsers/sms.ts` (§6) |
 | Saved date is "now" instead of the transaction date | `OCCURRED_AT_PATTERNS` didn't match, or the date was rejected as impossible/future, so `add.tsx` fell back to the save time | Add a date pattern in `src/parsers/sms.ts` (§6) |
 | Add Expense opens for a promo/credit/balance SMS | Swift `isExpense()` found a debit verb + amount in it | The gate is default-deny; a false open means the text has both. Tighten the verb set or add a `REJECT_PATTERNS` entry in `src/parsers/sms.ts` and mirror it in `ProcessSMSIntent.isRejected()` |
+| A credit/repayment never appears in `/receive` | Swift `isCredit()` didn't match, so no `processSmsIncoming` was queued — and a credit never opens the app, so there is nothing to see immediately | Add/widen a credit+amount regex in `CREDIT_AMOUNT_PATTERNS` (`src/parsers/sms.ts`) **and mirror it in `ProcessSMSIntent.isCredit()`** (§6); use **Show Result** on the classifier — a credit returns `false` *and* dispatches |
+| Repayment review opens with a blank sender | The SMS carries no parsable name or UPI id, or it names the account holder | Name falls back to a remembered handle (the UPI id or a name spelling already learned for a person), then the parsed `senderName`; `"your A/c"` is deliberately suppressed (`parseIncomingSms`, `src/parsers/sms.ts`). Name the sender once in the review and both the UPI id and that spelling are remembered for next time |
+| Repayment review opens with an oddly-spaced/wrong sender name | `SENDER_NAME_PATTERNS` didn't catch this bank's wording | Sender extraction trims and collapses whitespace; widen the patterns in `src/parsers/sms.ts` if a shape is missed |
 | Worked, then stopped after an iOS update | Run Immediately reverted | Re-enable it in the automation |
 | Nothing at all, ever | Filter never matches (e.g. the bank writes only `₹`) | Loosen to `Message Contains` → `Rs.`; add a second automation for `₹`; remember filters are ANDed |
 | Add sheet opens for SMS you did not want | Filter is too broad | Narrow with a Sender filter, or add a second condition |
@@ -336,9 +369,11 @@ and the raw text before anything is written to the database.
 
 ## 6. Adding a new bank format
 
-**One parser, all banks.** There is no per-bank parser and you should not add
-one. `parseAnySms()` in `src/parsers/sms.ts` is the single entry point for SMS
-from every bank, and it works by trying an ordered list of regexes.
+**One parser per direction, all banks.** There is no per-bank parser and you
+should not add one. `parseAnySms()` (debits/expenses) and `parseIncomingSms()`
+(credits/repayments) in `src/parsers/sms.ts` are the two entry points, each
+working by trying an ordered list of regexes. They are intentionally separate so
+a debit can never be read as money-in.
 
 > This replaced per-bank parser files (`hdfc.ts`, `fampapp.ts`) that used to be
 > dispatched on `bankSource`. They were redundant — they matched the same shapes
@@ -365,17 +400,42 @@ To add a new format:
    bank in `bank_source` (`hdfc` / `fampapp` / `gpay` / `unknown`). This is
    cosmetic only; it changes no parsing.
 4. **Keep the Swift gate in sync.** `ProcessSMSIntent.isExpense()` mirrors the
-   three `DEBIT_AMOUNT_PATTERNS` as anchored, case-insensitive regexes, and
-   `isRejected()` mirrors `REJECT_PATTERNS`. If you add or change a shape, update
-   both sides — otherwise the classifier returns `false`, the Shortcut's `If`
-   fails, and the message never reaches the JS parser (or, worse, Swift says
-   `true` while `parseAnySms` finds nothing, so the app opens with no Add sheet).
-   Both sides match case-insensitively; keep that consistent. Clearing the Swift
-   gate is still not enough: the JS handler also requires `parseSucceeded`.
+   three `DEBIT_AMOUNT_PATTERNS` as anchored, case-insensitive regexes,
+   `isCredit()` mirrors `CREDIT_AMOUNT_PATTERNS`, and `isRejected()` mirrors
+   `REJECT_PATTERNS`. If you add or change a shape, update both sides — otherwise
+   the classifier returns `false`, the Shortcut's `If` fails, and the message
+   never reaches the JS parser (or, worse, Swift says `true` while `parseAnySms`
+   finds nothing, so the app opens with no Add sheet). A credit missed here fails
+   more quietly still: no invocation is queued, so nothing ever shows up in
+   `/receive`. Both sides match case-insensitively; keep that consistent.
+   Clearing the Swift gate is still not enough: the JS handler also requires
+   `parseSucceeded` for an expense, and caches the receipt for review on the
+   credit path.
 5. Check the Shortcut filter still matches. The automation in §2 filters on
    `Message Contains: Rs.`, so a bank that never writes `Rs.` (or only `₹`) will
    not reach the parser at all until that filter — or a second automation — is
    widened.
+
+### Adding a money-in (credit) format
+
+Credits use the same workflow but a separate pair of pattern lists, because the
+gate must stay default-deny in both directions:
+
+1. Add a credit+amount regex to `CREDIT_AMOUNT_PATTERNS` in
+   `src/parsers/sms.ts`. Like the debit side, every amount pattern must carry a
+   credit verb (`credited`/`received`/`deposited`/`refunded`/`added`) alongside
+   the figure — a bare `Rs.` figure or a balance is never money-in.
+2. Sender attribution comes from `SENDER_NAME_PATTERNS` (a human name after
+   `from`/`by`) and `UPI_ID_REGEX` (a `name@bank` VPA). Both are best-effort and
+   may be `null`; the review flow lets the user name the sender, and a VPA is
+   remembered as an alias.
+3. **Mirror the credit pattern in `ProcessSMSIntent.isCredit()`** (Swift). This
+   is the step that is easiest to forget: if Swift doesn't classify the message
+   as a credit, it never dispatches `processSmsIncoming` and the repayment is
+   silently lost — there is no log and no UI.
+4. No new Shortcut is needed as long as the message carries `Rs.`; the same
+   automation covers it. A message that writes only `₹` needs its own trigger
+   (§2).
 
 No Shortcut changes are needed for a new bank that uses standard `Rs.` wording —
 the same automation covers it. A bank that writes `₹` without `Rs.` needs its own

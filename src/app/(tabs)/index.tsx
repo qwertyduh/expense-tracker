@@ -5,7 +5,7 @@ import { PieChart } from 'react-native-chart-kit';
 
 import { Card } from '@/components/ui/card';
 import { EmptyState } from '@/components/ui/empty-state';
-import { Fab } from '@/components/ui/fab';
+import { DropletMenu } from '@/components/ui/droplet-menu';
 import { ListRow } from '@/components/ui/list-row';
 import { Screen, ScreenHeader } from '@/components/ui/screen';
 import { ThemedText } from '@/components/themed-text';
@@ -76,102 +76,125 @@ export default function HomeScreen() {
   const chartWidth = Math.min(Dimensions.get('window').width, 800) - Spacing.four * 2 - Spacing.three * 2;
 
   return (
-    <Screen>
-      <ScreenHeader
-        title="Expenses"
-        subtitle={`${monthLabel(monthKey(new Date().toISOString()))} · your share`}
-      />
+    <View style={styles.container}>
+      <Screen>
+        <ScreenHeader
+          title="Expenses"
+          subtitle={`${monthLabel(monthKey(new Date().toISOString()))} · your share`}
+        />
 
-      <Card>
-        <ThemedText type="small" themeColor="textSecondary">
-          Spent this month
-        </ThemedText>
-        <ThemedText type="title" style={styles.total}>
-          {formatCurrency(monthTotal)}
-        </ThemedText>
-        <View style={[styles.summaryRow, { borderTopColor: theme.border }]}>
-          <ThemedText type="small" themeColor="textSecondary">
-            Received back this month
-          </ThemedText>
-          <ThemedText type="smallBold">{formatCurrency(receivedThisMonth)}</ThemedText>
-        </View>
-      </Card>
-
-      {outstanding > 0 ? (
         <Card>
           <ThemedText type="small" themeColor="textSecondary">
-            Owed to you
+            Spent this month
           </ThemedText>
           <ThemedText type="title" style={styles.total}>
-            {formatCurrency(outstanding)}
+            {formatCurrency(monthTotal)}
           </ThemedText>
-        </Card>
-      ) : null}
-
-      {byCategory.length > 0 ? (
-        <Card style={styles.chartCard}>
-          <ThemedText type="smallBold">By category</ThemedText>
-          <PieChart
-            data={byCategory}
-            width={chartWidth}
-            height={180}
-            accessor="amount"
-            backgroundColor="transparent"
-            paddingLeft="0"
-            chartConfig={{
-              color: () => theme.text,
-            }}
-          />
-        </Card>
-      ) : null}
-
-      {pendingReceipts > 0 ? (
-        <Pressable
-          onPress={() => router.push('/receive')}
-          style={({ pressed }) => (pressed ? styles.pressed : null)}>
-          <Card style={styles.banner}>
-            <ThemedText type="smallBold">
-              {pendingReceipts} payment{pendingReceipts === 1 ? '' : 's'} received — tap to review
-            </ThemedText>
+          <View style={[styles.summaryRow, { borderTopColor: theme.border }]}>
             <ThemedText type="small" themeColor="textSecondary">
-              Match {pendingReceipts === 1 ? 'it' : 'them'} to who paid you back
+              Received back this month
             </ThemedText>
-          </Card>
-        </Pressable>
-      ) : null}
-
-      <ThemedText type="smallBold" style={styles.sectionTitle}>
-        Recent
-      </ThemedText>
-
-      {expenses.length === 0 ? (
-        <EmptyState
-          title="No expenses yet"
-          subtitle="Tap + to add one, or pay with GPay and it will show up here automatically."
-        />
-      ) : (
-        <Card style={styles.listCard}>
-          {expenses.slice(0, 12).map((expense) => (
-            <ListRow
-              key={expense.id}
-              title={expense.merchant ?? expense.label ?? expense.category_name ?? 'Expense'}
-              subtitle={`${expense.category_name ?? 'Uncategorized'} · ${formatRelative(expense.occurred_at)}`}
-              value={formatCurrency(expense.amount)}
-              onPress={() => router.push(`/expense/${expense.id}`)}
-            />
-          ))}
+            <ThemedText type="smallBold">{formatCurrency(receivedThisMonth)}</ThemedText>
+          </View>
         </Card>
-      )}
 
-      <View style={styles.fabSpacer} />
-      <Fab label="+ Add" onPress={startManual} />
-    </Screen>
+        {outstanding > 0 ? (
+          <Pressable
+            onPress={() => router.push('/owed')}
+            style={({ pressed }) => (pressed ? styles.pressed : null)}>
+            <Card>
+              <View style={styles.owedHeader}>
+                <ThemedText type="small" themeColor="textSecondary">
+                  Owed to you
+                </ThemedText>
+                <ThemedText type="small" themeColor="accent">
+                  View all ›
+                </ThemedText>
+              </View>
+              <ThemedText type="title" style={styles.total}>
+                {formatCurrency(outstanding)}
+              </ThemedText>
+            </Card>
+          </Pressable>
+        ) : null}
+
+        {byCategory.length > 0 ? (
+          <Card style={styles.chartCard}>
+            <ThemedText type="smallBold">By category</ThemedText>
+            <PieChart
+              data={byCategory}
+              width={chartWidth}
+              height={180}
+              accessor="amount"
+              backgroundColor="transparent"
+              paddingLeft="0"
+              chartConfig={{
+                color: () => theme.text,
+              }}
+            />
+          </Card>
+        ) : null}
+
+        {pendingReceipts > 0 ? (
+          <Pressable
+            onPress={() => router.push('/receive')}
+            style={({ pressed }) => (pressed ? styles.pressed : null)}>
+            <Card style={styles.banner}>
+              <ThemedText type="smallBold">
+                {pendingReceipts} payment{pendingReceipts === 1 ? '' : 's'} received — tap to review
+              </ThemedText>
+              <ThemedText type="small" themeColor="textSecondary">
+                Match {pendingReceipts === 1 ? 'it' : 'them'} to who paid you back
+              </ThemedText>
+            </Card>
+          </Pressable>
+        ) : null}
+
+        <ThemedText type="smallBold" style={styles.sectionTitle}>
+          Recent
+        </ThemedText>
+
+        {expenses.length === 0 ? (
+          <EmptyState
+            title="No expenses yet"
+            subtitle="Tap + to add one, or pay with GPay and it will show up here automatically."
+          />
+        ) : (
+          <Card style={styles.listCard}>
+            {expenses.slice(0, 12).map((expense) => (
+              <ListRow
+                key={expense.id}
+                title={expense.merchant ?? expense.label ?? expense.category_name ?? 'Expense'}
+                subtitle={`${expense.category_name ?? 'Uncategorized'} · ${formatRelative(expense.occurred_at)}`}
+                value={formatCurrency(expense.amount)}
+                onPress={() => router.push(`/expense/${expense.id}`)}
+              />
+            ))}
+          </Card>
+        )}
+
+        <View style={styles.fabSpacer} />
+      </Screen>
+      <DropletMenu
+        onAddPress={() => startManual()}
+        onReceivePress={() => router.push('/receive')}
+      />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
   total: {
     marginTop: Spacing.one,
+  },
+  owedHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.three,
   },
   summaryRow: {
     flexDirection: 'row',

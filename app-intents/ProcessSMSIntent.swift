@@ -71,6 +71,7 @@ struct ProcessSMSIntent: AppIntent {
         let patterns = [
             #"(?:Rs\.?|INR|₹)\s?[\d,]+(?:\.\d+)?\s*(?:has\s+been\s+|is\s+|was\s+)?(?:credited|received|deposited|refunded|added)\b"#,
             #"\bcredited\s+with\s+(?:Rs\.?|INR|₹)\s?[\d,]+"#,
+            #"\bcredit\s+of\s+(?:Rs\.?|INR|₹)\s?[\d,]+"#,
             #"\b(?:Received|Credited|Deposited|Refunded|You\s+received)\b[^.\n]{0,40}?(?:Rs\.?|INR|₹)\s?[\d,]"#,
         ]
         return patterns.contains { text.range(of: $0, options: [.regularExpression, .caseInsensitive]) != nil }

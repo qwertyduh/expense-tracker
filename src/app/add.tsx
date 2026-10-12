@@ -1,5 +1,5 @@
 import { useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 
 import { AmountSlide } from "@/components/add-flow/amount-slide";
@@ -12,11 +12,53 @@ import { ThemedView } from "@/components/themed-view";
 import { Spacing } from "@/constants/theme";
 import { CategoryRow } from "@/db/categories";
 import { insertExpense } from "@/db/expenses";
+import { getMerchantMemory, rememberMerchant } from "@/db/merchant-memory";
+import { AddExpenseIntent } from "@/hooks/useAddExpenseIntent";
 import { useAddExpenseIntentContext } from "@/hooks/add-expense-intent-provider";
 import { useKeyboardHeight } from "@/hooks/use-keyboard";
 
 const STEP_NAMES = ["Amount", "Category", "Split", "Label", "Preview"] as const;
 const LAST_STEP = STEP_NAMES.length - 1;
+
+// Slide indices whose data can arrive pre-filled by the SMS parser.
+const AMOUNT_STEP = 0;
+const CATEGORY_STEP = 1;
+const SPLIT_STEP = 2;
+
+type InitialState = {
+  amount: string;
+  category: CategoryRow | null;
+  /** First slide that still needs input. */
+  step: number;
+  /** Raw SMS the state was built from, so a warm-start intent can be detected. */
+  appliedSms: string | null;
+};
+
+// The Add flow opens at the first slide whose data is not already known. An SMS
+// carries its amount, so Amount is skipped; when the merchant has been filed
+// before (merchant_memory), the category is known too and Category is skipped.
+// Split and Label are never skipped — Split is always a real choice and Label
+// has nothing to pre-fill. Synchronous DB reads, so this can run in a useState
+// initializer with no first-frame flash of a slide we then jump off.
+function buildInitial(intent: AddExpenseIntent | null): InitialState {
+  if (intent?.source !== "sms") {
+    return { amount: "", category: null, step: AMOUNT_STEP, appliedSms: null };
+  }
+
+  const amount = intent.prefill.amount != null ? String(intent.prefill.amount) : "";
+  const memory = intent.prefill.merchant
+    ? getMerchantMemory(intent.prefill.merchant)
+    : null;
+  const category = memory?.category ?? null;
+
+  // Never skip Amount without one to fall back on: a deep link can carry a
+  // merchant but no parseable amount, and an empty Amount slide must be asked.
+  let step = AMOUNT_STEP;
+  if (amount !== "") step = CATEGORY_STEP;
+  if (amount !== "" && category != null) step = SPLIT_STEP;
+
+  return { amount, category, step, appliedSms: intent.rawText };
+}
 
 export default function AddScreen() {
   const { intent, clear } = useAddExpenseIntentContext();
@@ -25,28 +67,38 @@ export default function AddScreen() {
   // slide content + footer reflow above the keyboard (layout shift, not a
   // transform — transforms on a focused field dismiss the keyboard on iOS).
   const keyboardHeight = useKeyboardHeight();
-  const [currentStep, setCurrentStep] = useState(0);
-  const [amount, setAmount] = useState("");
-  const [category, setCategory] = useState<CategoryRow | null>(null);
+  // Built once from the intent that opened the screen: amount + (remembered)
+  // category pre-filled, opening on the first slide that still needs input.
+  const [initial] = useState(() => buildInitial(intent));
+  const [currentStep, setCurrentStep] = useState(initial.step);
+  const [amount, setAmount] = useState(initial.amount);
+  const [category, setCategory] = useState<CategoryRow | null>(initial.category);
   const [split, setSplit] = useState<SplitSummary | null>(null);
   const [label, setLabel] = useState("");
   const totalAmount = parseFloat(amount) || 0;
 
-  const smsPrefillAmount =
-    intent?.source === "sms" && intent.prefill.amount != null
-      ? String(intent.prefill.amount)
-      : null;
-
-  // Pre-fill from SMS parse; ignore manual opens (amount typed by hand anyway).
+  // Warm start: a fresh SMS can arrive while /add is already mounted, so re-apply
+  // its prefill and jump to the first slide that still needs input. Keyed on the
+  // raw text so re-renders for the same message never wipe in-progress edits.
+  const appliedSms = useRef<string | null>(initial.appliedSms);
   useEffect(() => {
-    if (smsPrefillAmount != null) setAmount(smsPrefillAmount);
-  }, [smsPrefillAmount]);
+    if (intent?.source !== "sms") return;
+    if (appliedSms.current === intent.rawText) return;
+    appliedSms.current = intent.rawText;
+
+    const next = buildInitial(intent);
+    setAmount(next.amount);
+    setCategory(next.category);
+    setSplit(null);
+    setLabel("");
+    setCurrentStep(next.step);
+  }, [intent]);
 
   // No intent = opened directly (e.g. the raw add:// route) -> behave exactly
   // like a manual open: empty amount, nothing pre-filled.
   const smsIntent = intent?.source === "sms" ? intent : null;
   const isManual = smsIntent == null;
-  const isAmountStep = currentStep === 0;
+  const isAmountStep = currentStep === AMOUNT_STEP;
 
   const goNext = () => {
     setCurrentStep((step) => Math.min(step + 1, LAST_STEP));
@@ -78,6 +130,12 @@ export default function AddScreen() {
       occurredAt: smsIntent?.prefill.occurredAt ?? new Date().toISOString(),
       participants: split.participants,
     });
+    // Learn the payee -> category mapping so the next SMS from it opens past the
+    // Category slide. Only SMS entries carry a merchant, and only confirmed
+    // writes should teach anything.
+    if (smsIntent?.prefill.merchant) {
+      rememberMerchant(smsIntent.prefill.merchant, category.id, split.participantCount);
+    }
     return expenseId;
   };
 

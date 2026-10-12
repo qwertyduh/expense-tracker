@@ -108,9 +108,9 @@ src/
 │   ├── add-flow/           → one component per slide in the add flow
 │   └── ui/                 → shared UI kit (Button, Card, Chip, FAB, …)
 ├── hooks/
-│   ├── useAppIntentDispatcher.ts       → App Intent ("processSms") → parse → intent
+│   ├── useAppIntentDispatcher.ts       → App Intents (processSms / processSmsIncoming) → parse → intent
 │   ├── useAddExpenseIntent.ts          → legacy deep link → intent (cold + warm start)
-│   └── add-expense-intent-provider.tsx → root-level listener + routing to /add
+│   └── add-expense-intent-provider.tsx → root-level listener + routing to /add and /receive
 ├── db/
 │   ├── schema.ts          → CREATE TABLE statements + initDatabase()
 │   ├── seed.ts             → default categories + self person
@@ -124,7 +124,7 @@ src/
 │   └── payment-detection.ts → JS bridge to the Android capture module
 └── parsers/
     ├── types.ts            → ParsedTransaction interface + BankSource
-    ├── sms.ts               → parseAnySms(), the single parser for all banks
+    ├── sms.ts               → parseAnySms() + parseIncomingSms() (debit / credit)
     ├── gpay.ts              → parseGpay(), GPay PIN-screen text (Android capture)
     └── index.ts             → re-exports only, no dispatch
 
@@ -192,6 +192,16 @@ is `true`, which brings the app up so JS can drain the queued dispatch.
 `useAppIntentDispatcher()` (`src/hooks/useAppIntentDispatcher.ts`) receives it,
 calls `parseAnySms()`, and navigates to `/add` only when `parseSucceeded` is true.
 The text arrives as a typed `String`, so no URL encoding is involved.
+
+**Primary (iOS): the `processSmsIncoming` credit path.** Money-in uses the same
+classifier but a separate invocation. When `isRejected()` and `isExpense()` both
+miss, `Process Incoming SMS` applies `isCredit()` and, for a credit, calls
+`dispatch(name: "processSmsIncoming", params:)`, returning `false` so the app is
+never opened. The invocation waits in the native queue; on the next launch
+`useAppIntentDispatcher()` calls `parseIncomingSms()`, caches the raw text as a
+pending `incoming_receipts` row, and routes to `/receive` for review — nothing is
+auto-filed. The credit gate mirrors `CREDIT_AMOUNT_PATTERNS` in
+`ProcessSMSIntent.isCredit()`, so the two must be kept in sync.
 
 **Fallback (Android, legacy iOS): the deep link contract.**
 

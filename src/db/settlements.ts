@@ -93,6 +93,166 @@ export function listOutstandingShares(): OutstandingShare[] {
     .map(mapOutstanding);
 }
 
+// One person's slice of what they still owe: the expense, the part they carry,
+// and what is left after repayments.
+export type OwedItem = {
+  expenseId: string;
+  label: string | null;
+  merchant: string | null;
+  occurredAt: string;
+  shareAmount: number;
+  receivedAmount: number;
+  remaining: number;
+};
+
+// Everything owed to you by one person (or by the nameless bucket), newest
+// expense first, with the group total still outstanding.
+export type OwedGroup = {
+  /** personId, or the sentinel key for the nameless group. */
+  key: string;
+  name: string;
+  unnamed: boolean;
+  totalRemaining: number;
+  items: OwedItem[];
+};
+
+// The split step creates "Person 2", "Person 3"… when a participant is left
+// unnamed, so those count as nameless rather than as real people.
+const NAMELESS_KEY = '__nameless__';
+const NAMELESS_NAME = 'Unnamed';
+const PLACEHOLDER_NAME = /^person\s*\d+$/i;
+
+function isNameless(name: string): boolean {
+  const trimmed = name.trim();
+  return trimmed === '' || PLACEHOLDER_NAME.test(trimmed);
+}
+
+type NamelessRow = {
+  expense_id: string;
+  label: string | null;
+  merchant: string | null;
+  occurred_at: string;
+  unassigned: number;
+};
+
+// "Who owes me what", grouped by person. Participant shares are grouped under
+// their person; a split's unassigned remainder (a bill shared with fewer named
+// people than shares) and any placeholder/blank participant land in a single
+// "Unnamed" group pinned to the bottom.
+//
+// `includeSettled` also returns shares that have been fully repaid, so the same
+// list doubles as history.
+export function listOwedByPerson(includeSettled = false): OwedGroup[] {
+  const groups = new Map<string, OwedGroup>();
+
+  const groupFor = (key: string, name: string, unnamed: boolean): OwedGroup => {
+    const existing = groups.get(key);
+    if (existing) return existing;
+    const created: OwedGroup = { key, name, unnamed, totalRemaining: 0, items: [] };
+    groups.set(key, created);
+    return created;
+  };
+
+  const shares = db.getAllSync<OutstandingRow>(
+    `${OUTSTANDING_SQL} ORDER BY e.occurred_at DESC`
+  );
+  for (const row of shares) {
+    const shareAmount = round2(row.share_amount);
+    const receivedAmount = round2(row.received_amount);
+    const remaining = round2(Math.max(0, shareAmount - receivedAmount));
+    if (!includeSettled && remaining <= 0.005) continue;
+
+    const unnamed = isNameless(row.display_name);
+    const group = groupFor(
+      unnamed ? NAMELESS_KEY : row.person_id,
+      unnamed ? NAMELESS_NAME : row.display_name,
+      unnamed
+    );
+    group.items.push({
+      expenseId: row.expense_id,
+      label: row.label,
+      merchant: row.merchant,
+      occurredAt: row.occurred_at,
+      shareAmount,
+      receivedAmount,
+      remaining,
+    });
+  }
+
+  // A split's remainder nobody was named for: the bill share above your own that
+  // no participant row accounts for.
+  const nameless = db.getAllSync<NamelessRow>(
+    `SELECT e.id AS expense_id, e.label, e.merchant, e.occurred_at,
+            (e.total_amount - e.amount) - COALESCE(p.shares, 0) AS unassigned
+     FROM expenses e
+     LEFT JOIN (
+       SELECT expense_id, SUM(share_amount) AS shares
+       FROM expense_participants
+       GROUP BY expense_id
+     ) p ON p.expense_id = e.id
+     WHERE e.is_split = 1
+     ORDER BY e.occurred_at DESC`
+  );
+  for (const row of nameless) {
+    const amount = round2(row.unassigned);
+    if (amount <= 0.005) continue;
+    const group = groupFor(NAMELESS_KEY, NAMELESS_NAME, true);
+    group.items.push({
+      expenseId: row.expense_id,
+      label: row.label,
+      merchant: row.merchant,
+      occurredAt: row.occurred_at,
+      shareAmount: amount,
+      receivedAmount: 0,
+      remaining: amount,
+    });
+  }
+
+  const result = [...groups.values()];
+  for (const group of result) {
+    group.items.sort(
+      (a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime()
+    );
+    group.totalRemaining = round2(
+      group.items.reduce((sum, item) => sum + item.remaining, 0)
+    );
+  }
+
+  // People alphabetically; the nameless bucket always last.
+  result.sort((a, b) => {
+    if (a.unnamed !== b.unnamed) return a.unnamed ? 1 : -1;
+    return a.name.localeCompare(b.name);
+  });
+
+  return result;
+}
+
+// Every transaction one person carries a share of — outstanding AND already
+// settled — newest first. This is the drill-down behind a person on the "Owed
+// to you" screen, so it deliberately has no remaining filter.
+export function listPersonOwed(personId: string): OwedItem[] {
+  return db
+    .getAllSync<OutstandingRow>(
+      `${OUTSTANDING_SQL}
+       WHERE ep.person_id = ?
+       ORDER BY e.occurred_at DESC`,
+      personId
+    )
+    .map((row) => {
+      const shareAmount = round2(row.share_amount);
+      const receivedAmount = round2(row.received_amount);
+      return {
+        expenseId: row.expense_id,
+        label: row.label,
+        merchant: row.merchant,
+        occurredAt: row.occurred_at,
+        shareAmount,
+        receivedAmount,
+        remaining: round2(Math.max(0, shareAmount - receivedAmount)),
+      };
+    });
+}
+
 export type InsertSettlementInput = {
   personName: string; // find-or-create
   amount: number; // total received
@@ -175,20 +335,13 @@ export function receivedTotalSince(isoDate: string): number {
   return round2(total);
 }
 
-// Sum of all remaining across outstanding shares.
+// Sum of all remaining across outstanding shares, including the nameless
+// remainder of a partially named split. Derived from listOwedByPerson so the
+// Home card and the "Owed to you" screen can never disagree.
 export function totalOutstanding(): number {
-  const total =
-    db.getFirstSync<{ total: number }>(
-      `SELECT COALESCE(SUM(ep.share_amount - COALESCE(sa.received, 0)), 0) AS total
-       FROM expense_participants ep
-       LEFT JOIN (
-         SELECT expense_id, person_id, SUM(amount) AS received
-         FROM settlement_allocations
-         GROUP BY expense_id, person_id
-       ) sa ON sa.expense_id = ep.expense_id AND sa.person_id = ep.person_id
-       WHERE (ep.share_amount - COALESCE(sa.received, 0)) > 0.005`
-    )?.total ?? 0;
-  return round2(total);
+  return round2(
+    listOwedByPerson(false).reduce((sum, group) => sum + group.totalRemaining, 0)
+  );
 }
 
 // Person's outstanding total (sum remaining for that person).
