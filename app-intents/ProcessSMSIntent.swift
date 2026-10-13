@@ -2,15 +2,13 @@ import AppIntents
 import Foundation
 internal import ExpoAppIntents
 
-/// Background half of the SMS capture pair, and the Shortcut's first action.
-/// It never brings the app up (`openAppWhenRun = false`), but it does persist an
-/// invocation for the app. Expenses persist a `processSms` invocation and return
-/// `true`; the Shortcut then runs `OpenExpenseSMSIntent`, which brings the app
-/// forward so JS can route to /add. Credits persist a `processSmsIncoming`
-/// invocation and still return `false`, so the app is never opened — a credit can
-/// arrive while the phone is locked. That queued invocation IS the cache: JS
-/// drains it on the next app launch. Rejected and unknown messages dispatch
-/// nothing and return `false`.
+/// Background classifier and the Shortcut's first action. It never brings the app up
+/// (`openAppWhenRun = false`). An expense (debit verb + amount) stashes the raw text
+/// for the Live Activity intent that runs next and returns `true`, so the Shortcut's
+/// `If` runs `ShowExpenseCaptureIntent`. A credit queues a `processSmsIncoming`
+/// invocation and returns `false`, so the app is never opened — a credit can arrive
+/// while the phone is locked, and the queued invocation is drained on the next launch.
+/// Rejected and unknown messages dispatch nothing and return `false`.
 struct ProcessSMSIntent: AppIntent {
     static var title: LocalizedStringResource = "Process Incoming SMS"
     static var openAppWhenRun: Bool = false   // silent background classification
@@ -90,20 +88,5 @@ struct ProcessSMSIntent: AppIntent {
         // transaction, so they are checked before the expense gate.
         let pattern = #"\botp\b|one[\s-]?time\s+password|verification\s+code|do\s+not\s+share|mini[\s-]?statement|account\s+statement|e[\s-]?statement"#
         return text.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil
-    }
-}
-
-/// Foreground half of the pair. It has no parameters and does no work: the
-/// classifier has already dispatched the text. Its only job is to bring the app
-/// up (`openAppWhenRun = true`), which the Shortcut does solely when the
-/// classifier returned `true`. On launch, `useAppIntents` drains the queued
-/// `processSms` invocation, `parseAnySms` parses it, and the Add flow opens
-/// pre-filled.
-struct OpenExpenseSMSIntent: AppIntent {
-    static var title: LocalizedStringResource = "Open Expense from SMS"
-    static var openAppWhenRun: Bool = true
-
-    func perform() async throws -> some IntentResult {
-        return .result()
     }
 }

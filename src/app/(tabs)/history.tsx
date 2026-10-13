@@ -8,6 +8,7 @@ import { ListRow } from '@/components/ui/list-row';
 import { Screen, ScreenHeader } from '@/components/ui/screen';
 import { Spacing } from '@/constants/theme';
 import { listActivity, type ActivityRow } from '@/db/activity';
+import { useExpensesChanged } from '@/lib/expenses-changed';
 import { formatCurrency, formatRelative } from '@/lib/format';
 
 const ACTION_LABEL: Record<ActivityRow['action'], string> = {
@@ -19,11 +20,13 @@ const ACTION_LABEL: Record<ActivityRow['action'], string> = {
 export default function HistoryScreen() {
   const [events, setEvents] = useState<ActivityRow[]>([]);
 
-  useFocusEffect(
-    useCallback(() => {
-      setEvents(listActivity(200));
-    }, [])
-  );
+  const reload = useCallback(() => {
+    setEvents(listActivity(200));
+  }, []);
+
+  useFocusEffect(reload);
+  // Refresh in place when a capture is auto-logged on foreground.
+  useExpensesChanged(reload);
 
   return (
     <Screen>

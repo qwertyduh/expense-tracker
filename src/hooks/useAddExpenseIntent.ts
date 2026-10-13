@@ -118,7 +118,7 @@ export function useAddExpenseIntent(): {
 
     // Opening Add from the capsule is a review, not an ignore: drop the pending
     // capture so the foreground flush can't also auto-log it.
-    void liveActivity.removePendingCapture(rawText);
+    liveActivity.removePendingCapture(rawText);
 
     setSmsIntentState(prefill, rawText, bankSource);
   }

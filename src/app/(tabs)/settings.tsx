@@ -24,7 +24,6 @@ import {
   type PersonWithHandles,
 } from '@/db/person-handles';
 import { paymentDetection, type DetectionMode } from '@/lib/payment-detection';
-import { liveActivity } from '@/lib/live-activity';
 import { syncMerchantCategoryMap } from '@/lib/merchant-category-sync';
 import { useTheme } from '@/hooks/use-theme';
 
@@ -46,7 +45,6 @@ export default function SettingsScreen() {
   const [detectionEnabled, setDetectionEnabled] = useState(true);
   const [mode, setMode] = useState<DetectionMode>('auto');
   const [serviceEnabled, setServiceEnabled] = useState(false);
-  const [liveActivityBusy, setLiveActivityBusy] = useState(false);
 
   const reload = useCallback(() => {
     setSelfName(getSelf()?.display_name ?? '');
@@ -150,18 +148,6 @@ export default function SettingsScreen() {
 
   const activeMode = MODES.find((m) => m.value === mode);
 
-  const testLiveActivity = async () => {
-    setLiveActivityBusy(true);
-    try {
-      const id = await liveActivity.startTest('₹49.00', 'HAIER APPLIANCES INDIA', 'Shopping');
-      Alert.alert('Live Activity started', id ? `Activity id: ${id}` : undefined);
-    } catch (error) {
-      Alert.alert('Live Activity failed', error instanceof Error ? error.message : String(error));
-    } finally {
-      setLiveActivityBusy(false);
-    }
-  };
-
   return (
     <Screen>
       <ScreenHeader title="Settings" />
@@ -219,21 +205,6 @@ export default function SettingsScreen() {
               {activeMode.hint}
             </ThemedText>
           ) : null}
-        </Card>
-      ) : null}
-
-      {Platform.OS === 'ios' ? (
-        <Card style={styles.detectionCard}>
-          <ThemedText type="smallBold">Live Activity (Phase 1 test)</ThemedText>
-          <ThemedText type="small" themeColor="textSecondary">
-            Starts a throwaway expense-capture Live Activity so we can confirm the Dynamic
-            Island and Lock Screen render. It ends after 5 minutes, or when the app closes.
-          </ThemedText>
-          <Button
-            title="Start test Live Activity"
-            loading={liveActivityBusy}
-            onPress={testLiveActivity}
-          />
         </Card>
       ) : null}
 

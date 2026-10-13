@@ -6,10 +6,13 @@ mechanism per OS:
 
 - **iOS** can't read SMS, so an Apple Shortcuts automation forwards the bank
   message to a background App Intent (`ProcessSMSIntent`) that classifies it as a
-  payment without opening the app and queues it for JS; only then does the
-  Shortcut run a foreground intent (`OpenExpenseSMSIntent`) that brings the app up
-  so JS can parse the queued text over `expo-app-intents`. A custom deep link
-  (`expensetracker://add?...`) remains as a legacy/Android fallback.
+  payment without opening the app, and stashes the text. Only then does the
+  Shortcut run a second App Intent (`ShowExpenseCaptureIntent`) that starts a Live
+  Activity — a Dynamic Island / Lock Screen capsule showing the amount, vendor and
+  category. **Edit** opens the Add flow pre-filled; **Save** logs it without
+  opening the app; and a capsule you ignore or clear is auto-logged on the next
+  launch. A custom deep link (`expensetracker://add?...`) carries the text for the
+  Edit route and remains the Android fallback.
 - **Android** watches GPay's PIN screen with an AccessibilityService and shows a
   floating overlay to categorise the payment — the app never has to open.
 
@@ -23,17 +26,17 @@ installed).
 A UPI/card debit SMS arrives from your bank → an Apple Shortcuts automation
 captures the raw text (no parsing done in the Shortcut) → it runs the
 `Process Incoming SMS` App Intent, a background classifier that returns whether
-the message is an expense (a debit verb anchored to an amount) and, if so, queues
-the text for JS → only if it is, the
-Shortcut runs `Open Expense from SMS`, which opens the app so JS can drain the
-queue via `expo-app-intents` → `parseAnySms()` parses the message with one shared
-regex parser, and the Add Expense flow opens pre-filled with the amount,
-merchant, and transaction date. Credits, balances, OTPs, statements and promos
-stop at the classifier and never open the app. The bank is detected from the text
-and stored as a label, not used to pick a parser. The app still accepts the legacy
-`expensetracker://add?data=<url-encoded raw text>` deep link (used by the Android
-capture fallback). You can also add expenses manually via the same flow, with
-nothing pre-filled.
+the message is an expense (a debit verb anchored to an amount) and, if so, stashes
+the text → only if it is, the Shortcut runs `Show Expense Capture`, which starts a
+Live Activity capsule (Dynamic Island / Lock Screen) showing the parsed amount,
+vendor and category → **Edit** deep-links into the Add flow and `parseAnySms()`
+parses the message with one shared regex parser, opening Add pre-filled; **Save**
+logs it directly; ignoring it auto-logs on the next foreground. Credits, balances,
+OTPs, statements and promos stop at the classifier and never produce a capsule. The
+bank is detected from the text and stored as a label, not used to pick a parser. The
+app still accepts the legacy `expensetracker://add?data=<url-encoded raw text>` deep
+link (used by the Android capture fallback). You can also add expenses manually via
+the same flow, with nothing pre-filled.
 
 ---
 
@@ -59,22 +62,22 @@ nothing pre-filled.
 - Multi-user sync and real "who owes who" settlement
 - Budget alerts, weekly digest, yearly recap
 
-The Dynamic Island / Live Activity entry path now exists on iOS: an expense SMS
-starts a Live Activity from a background App Intent instead of opening the app
-(see [docs/ios-shortcut-setup.md](docs/ios-shortcut-setup.md)).
+The iOS Dynamic Island / Live Activity capture path is built: an expense SMS starts
+a Live Activity from a background App Intent instead of opening the app. The capsule
+shows the amount, vendor and category, with **Edit** (opens the Add flow) and
+**Save** (logs it without opening the app); a capsule the user ignores or clears is
+auto-logged on the next foreground. See
+[docs/ios-shortcut-setup.md](docs/ios-shortcut-setup.md).
 
-The Apple Shortcut and its Message automation are written up in
-[docs/ios-shortcut-setup.md](docs/ios-shortcut-setup.md), but the automation has
-to be built by hand on each phone — it can't be exported or shared — so it isn't
-"built" in the sense of something this repo can install for you.
+The Apple Shortcut and its Message automation are written up in the same doc, but
+the automation has to be built by hand on each phone — it can't be exported or
+shared — so it isn't "built" in the sense of something this repo can install for
+you.
 
 ## Planned, future versions
 
-1. **Next:** Live Activity interactions — an in-capsule **Edit** button that opens
-   the Add flow at the split slide, and auto-saving a capsule that is ignored or
-   dismissed.
-2. **After that:** Supabase-backed multi-user sync, real "who owes who"
-   settlement, budget alerts, weekly digest, yearly recap
+1. **Next:** Supabase-backed multi-user sync, real "who owes who" settlement,
+   budget alerts, weekly digest, yearly recap
 
 ---
 
@@ -84,7 +87,7 @@ to be built by hand on each phone — it can't be exported or shared — so it i
 | --------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | Expo (Continuous Native Generation) + RN      | Core app framework — `ios/` and `android/` are generated by `expo prebuild` and gitignored     |
 | Expo Router                                   | File-based navigation, also handles incoming deep links                                       |
-| `expo-app-intents`                            | iOS App Intents (`ProcessSMSIntent` + `OpenExpenseSMSIntent`) → JS delivery for the Shortcut automation |
+| `expo-app-intents`                            | iOS App Intents (`ProcessSMSIntent` + `ShowExpenseCaptureIntent` + `SaveExpenseCaptureIntent`) → App target + Live Activity target |
 | `expo-sqlite`                                 | Local database                                                                                |
 | `expo-crypto`                                 | UUID generation for primary keys                                                              |
 | `react-native-chart-kit` + `react-native-svg` | Pie chart                                                                                     |
@@ -131,7 +134,8 @@ src/
     ├── gpay.ts              → parseGpay(), GPay PIN-screen text (Android capture)
     └── index.ts             → re-exports only, no dispatch
 
-app-intents/                 → iOS App Intents Swift (ProcessSMSIntent + OpenExpenseSMSIntent + setup)
+app-intents/                 → iOS App Intents Swift (classifier + Live Activity start/save) [app target]
+targets/widget/              → Live Activity widget target (renders the capsule) [widget target]
 plugins/                     → Android config plugin + native Kotlin templates
 ```
 
@@ -183,18 +187,18 @@ detection. See [Android Track](#android-track).
 
 Both platforms reach the app through one shared parser, but over two channels.
 
-**Primary (iOS): the `processSms` App Intent pair.** The Shortcut passes the raw
-SMS text as the `Message Text` parameter of `Process Incoming SMS`
-(`ProcessSMSIntent` in `app-intents/ProcessSMSIntent.swift`), a background
-classifier (`openAppWhenRun = false`) that applies the native default-deny
-debit gate (`isRejected()` / `isExpense()`) and, for an expense, calls
-`AppIntentDispatcher.shared.dispatch(name: "processSms", params:)` before
-returning a `Bool`. The Shortcut runs the parameterless foreground `Open Expense
-from SMS` (`OpenExpenseSMSIntent`, `openAppWhenRun = true`) only when that `Bool`
-is `true`, which brings the app up so JS can drain the queued dispatch.
-`useAppIntentDispatcher()` (`src/hooks/useAppIntentDispatcher.ts`) receives it,
-calls `parseAnySms()`, and navigates to `/add` only when `parseSucceeded` is true.
-The text arrives as a typed `String`, so no URL encoding is involved.
+**Primary (iOS): the SMS capture App Intents.** The Shortcut passes the raw SMS
+text as the `Message Text` parameter of `Process Incoming SMS` (`ProcessSMSIntent`
+in `app-intents/ProcessSMSIntent.swift`), a background classifier
+(`openAppWhenRun = false`) that applies the native default-deny debit gate
+(`isRejected()` / `isExpense()`). For an expense it stashes the text and returns
+`true`. The Shortcut then runs `Show Expense Capture` (`ShowExpenseCaptureIntent`),
+a background `LiveActivityIntent` that starts a Live Activity capsule with the
+parsed amount, vendor and category. `Edit` deep-links into `/add` (where
+`parseAnySms()` runs); `Save` (`SaveExpenseCaptureIntent`) dispatches
+`processSmsSave`; and ignoring/dismissing the capsule leaves it in a pending list
+that `flushPendingCaptures()` auto-logs on the next foreground. The text arrives as
+a typed `String`, so no URL encoding is involved on the Intent path.
 
 **Primary (iOS): the `processSmsIncoming` credit path.** Money-in uses the same
 classifier but a separate invocation. When `isRejected()` and `isExpense()` both

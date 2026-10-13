@@ -15,6 +15,7 @@ import { countPendingIncomingReceipts } from '@/db/incoming-receipts';
 import { receivedTotalSince, totalOutstanding } from '@/db/settlements';
 import { useAddExpenseIntentContext } from '@/hooks/add-expense-intent-provider';
 import { useTheme } from '@/hooks/use-theme';
+import { useExpensesChanged } from '@/lib/expenses-changed';
 import { formatCurrency, formatRelative, monthKey, monthLabel } from '@/lib/format';
 
 const CHART_COLORS = [
@@ -51,6 +52,10 @@ export default function HomeScreen() {
       reload();
     }, [reload])
   );
+
+  // Refresh in place when a capture is auto-logged on foreground (an ignored capsule
+  // never changes navigation focus, so useFocusEffect alone won't re-run).
+  useExpensesChanged(reload);
 
   const { monthTotal, byCategory } = useMemo(() => {
     const current = monthKey(new Date().toISOString());

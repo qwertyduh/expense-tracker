@@ -144,7 +144,7 @@ export default function AddScreen() {
     // and clear the pending entry so the foreground flush can't log it again.
     liveActivity.endAll().catch(() => {});
     if (smsIntent) {
-      void liveActivity.removePendingCapture(smsIntent.rawText);
+      liveActivity.removePendingCapture(smsIntent.rawText);
     }
     return expenseId;
   };

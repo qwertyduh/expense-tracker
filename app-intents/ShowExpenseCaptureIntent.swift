@@ -1,6 +1,7 @@
 import ActivityKit
 import AppIntents
 import Foundation
+import UIKit
 
 /// Hand-off between the classifier and the Live Activity intent. Both run in the
 /// app's process, so `UserDefaults.standard` is shared and needs no App Group.
@@ -71,17 +72,18 @@ enum ExpenseCaptureBridge {
     }
 }
 
-/// Phase 2 probe and the intended replacement for `OpenExpenseSMSIntent`.
+/// Starts the expense-capture Live Activity — the Shortcut's second action, run only
+/// when `Process Incoming SMS` returned `true`.
 ///
 /// Apple documents that an App Intent conforming to `LiveActivityIntent` — and only
 /// that kind — may start a Live Activity while the app is *not* in the foreground,
 /// because a system intent runs in the app's process (which iOS launches in the
-/// background for this). The Shortcut runs this only when `Process Incoming SMS`
-/// returned `true`, so an expense surfaces as a Dynamic Island capsule instead of
-/// yanking the app forward.
+/// background for this). So an expense surfaces as a Dynamic Island capsule instead of
+/// yanking the app forward: **Edit** deep-links into `/add`, **Save** logs it, and an
+/// ignored capsule is auto-logged on the next foreground.
 ///
 /// The amount/vendor shown here come from `SmsDisplayParser`; the authoritative parse
-/// and the save still happen in JS when the user taps through to the Add flow.
+/// and the save still happen in JS.
 @available(iOS 17.0, *)
 struct ShowExpenseCaptureIntent: LiveActivityIntent {
     static var title: LocalizedStringResource = "Show Expense Capture"
@@ -95,14 +97,25 @@ struct ShowExpenseCaptureIntent: LiveActivityIntent {
     var messageText: String?
 
     func perform() async throws -> some IntentResult {
+        let provided = messageText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let stashed = UserDefaults.standard.string(forKey: ExpenseCaptureBridge.stashedTextKey) ?? ""
+        let raw = provided.isEmpty ? stashed : provided
+
+        // A capsule can't be shown when the phone is locked (we deliberately don't
+        // want a Lock Screen card for a capture) or when Live Activities are
+        // disabled. Route those to the app instead: record a pending capture, which
+        // the foreground flush auto-logs. Nothing opens, nothing is lost.
+        let locked = await MainActor.run { !UIApplication.shared.isProtectedDataAvailable }
+        let activitiesEnabled = ActivityAuthorizationInfo().areActivitiesEnabled
+        if locked || !activitiesEnabled {
+            ExpenseCaptureBridge.addPending(raw)
+            return .result()
+        }
+
         // Replace any prior activity so repeated runs stay clean.
         for activity in Activity<ExpenseCaptureAttributes>.activities {
             await activity.end(nil, dismissalPolicy: .immediate)
         }
-
-        let provided = messageText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let stashed = UserDefaults.standard.string(forKey: ExpenseCaptureBridge.stashedTextKey) ?? ""
-        let raw = provided.isEmpty ? stashed : provided
 
         let display = SmsDisplayParser.parse(raw)
         let vendor = display.merchant ?? SmsDisplayParser.bankLabel(raw) ?? "New expense"

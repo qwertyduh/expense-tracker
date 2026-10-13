@@ -13,6 +13,15 @@ import { flushPendingCaptures } from '@/lib/pending-captures';
 
 SplashScreen.preventAutoHideAsync();
 
+// Run before React renders so the first screen's data read already includes any
+// capture auto-logged while the app was closed. `initDatabase` / `flushPendingCaptures`
+// are synchronous, but a `_layout` effect runs *after* child screens mount, which is
+// why this must not live in an effect.
+initDatabase();
+seedDatabase('Pranay'); // your name, used for the 'self' person row
+syncMerchantCategoryMap();
+flushPendingCaptures();
+
 // Mounted inside AddExpenseIntentProvider: useAppIntentDispatcher reads
 // AddExpenseIntentContext, which only exists under the provider.
 function AppIntentListener() {
@@ -23,15 +32,9 @@ function AppIntentListener() {
 export default function RootLayout() {
   const colorScheme = useColorScheme();
 
-  // DB setup once at launch. Safe to re-run — init/seed check before writing.
+  // Keep the Live Activity's vendor -> category map fresh, and log any capsule the
+  // user ignored or dismissed, on every return to the foreground.
   useEffect(() => {
-    initDatabase();
-    seedDatabase('Pranay'); // your name, used for the 'self' person row
-    syncMerchantCategoryMap();
-    flushPendingCaptures();
-
-    // Keep the Live Activity's vendor -> category map fresh, and log any capsule the
-    // user ignored or dismissed: re-run on every return to the foreground.
     const subscription = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
         syncMerchantCategoryMap();

@@ -207,13 +207,13 @@ device's current time-of-day, `On YYYY-MM-DD[:HH:MM:SS]` uses the message's own
 time. Impossible or future dates are rejected and fall back to `null`, and
 `add.tsx` then stamps the expense with `new Date()` at confirm time.
 
-**Fallback behavior differs by channel.** On the App Intent path the Shortcut
-runs the foreground `Open Expense from SMS` intent only when the background
-classifier returned `true`, and the JS handler only sets an intent when
-`parseSucceeded` is true (`useAppIntentDispatcher.ts`). So a non-expense never
-opens the app, and an expense whose amount still fails to parse opens the app but
-shows no Add sheet. The legacy deep-link path (`useAddExpenseIntent.ts`) sets the
-intent regardless, so Add Expense opens with the raw SMS text shown and fields
+**Fallback behavior differs by channel.** On the App Intent path the Shortcut runs
+`Show Expense Capture` only when the background classifier returned `true`, and it
+starts a Live Activity capsule instead of opening the app — so a non-expense never
+produces a capsule. `Edit` opens `/add`, `Save` logs the expense directly, and an
+ignored or dismissed capsule is auto-logged on the next foreground. The deep-link
+path (`useAddExpenseIntent.ts`) sets the intent regardless of `parseSucceeded`, so
+Add Expense opens with the raw SMS text shown and any field the parser missed left
 empty for manual fill-in. Nothing is silently lost.
 
 **Getting real regex data:** you mentioned asking someone to re-send old HDFC
