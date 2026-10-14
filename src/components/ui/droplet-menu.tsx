@@ -5,6 +5,8 @@ import Svg, {
   Circle,
   Defs,
   FeColorMatrix,
+  FeComposite,
+  FeFlood,
   FeGaussianBlur,
   Filter,
   G,
@@ -110,9 +112,22 @@ export function DropletMenu({ onAddPress, onReceivePress }: DropletMenuProps) {
     outputRange: [0, 0, 1],
   });
 
-  // Goo circles (behind the real buttons) — same motion as the buttons.
-  const gooTriggerR = progress.interpolate({ inputRange: [0, 1], outputRange: [TRIGGER_R, TRIGGER_R + 2] });
-  const gooSatR = progress.interpolate({ inputRange: [0, 1], outputRange: [24, SAT_R] });
+  // Goo circles (behind the real buttons) — same motion as the buttons, but
+  // they balloon slightly past the button edge while the blob is stretching so
+  // the split reads as one liquid mass, then pull back *inside* the buttons as
+  // the split settles. Once the goo is smaller than the buttons the necks
+  // pinch off, so the idle expanded state is clean, separate circles instead of
+  // three bubbles still fused together.
+  const gooTriggerR = progress.interpolate({
+    inputRange: [0, 0.7, 1],
+    outputRange: [TRIGGER_R, TRIGGER_R + 4, TRIGGER_R - 6],
+    extrapolate: 'clamp',
+  });
+  const gooSatR = progress.interpolate({
+    inputRange: [0, 0.7, 1],
+    outputRange: [24, SAT_R + 3, SAT_R - 10],
+    extrapolate: 'clamp',
+  });
   const gooTopCy = progress.interpolate({
     inputRange: [0, 1],
     outputRange: [TRIGGER_CY, SAT_TOP_CY],
@@ -142,17 +157,30 @@ export function DropletMenu({ onAddPress, onReceivePress }: DropletMenuProps) {
             style={styles.goo}>
             <Defs>
               <Filter id="droplet-goo" x="-50%" y="-50%" width="200%" height="200%">
-                <FeGaussianBlur in="SourceGraphic" stdDeviation={7} />
+                <FeGaussianBlur in="SourceGraphic" stdDeviation={7} result="blur" />
+                {/*
+                  Threshold the blurred alpha into a hard metaball edge. The
+                  alpha coefficient is deliberately > 1 (the classic goo trick),
+                  so on iOS the shape's RGB gets repremultiplied by that >1 alpha
+                  and clips to white. Zero the colour channels and keep this
+                  primitive as an alpha-only silhouette.
+                */}
                 <FeColorMatrix
+                  in="blur"
                   type="matrix"
-                  values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 20 -9"
+                  values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 20 -9"
+                  result="goo"
                 />
+                {/* Re-fill the silhouette with the exact accent — only the
+                    shape's alpha is consumed, so the colour stays correct. */}
+                <FeFlood floodColor={theme.accentDeep} result="tint" />
+                <FeComposite in="tint" in2="goo" operator="in" />
               </Filter>
             </Defs>
             <G filter="url(#droplet-goo)">
-              <AnimatedCircle cx={TRIGGER_CX} cy={TRIGGER_CY} r={gooTriggerR} fill={theme.accent} />
-              <AnimatedCircle cx={SAT_CX} cy={gooTopCy} r={gooSatR} fill={theme.accent} />
-              <AnimatedCircle cx={SAT_CX} cy={gooBottomCy} r={gooSatR} fill={theme.accent} />
+              <AnimatedCircle cx={TRIGGER_CX} cy={TRIGGER_CY} r={gooTriggerR} fill="#000000" />
+              <AnimatedCircle cx={SAT_CX} cy={gooTopCy} r={gooSatR} fill="#000000" />
+              <AnimatedCircle cx={SAT_CX} cy={gooBottomCy} r={gooSatR} fill="#000000" />
             </G>
           </Svg>
         ) : null}

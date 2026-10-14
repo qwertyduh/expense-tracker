@@ -19,7 +19,6 @@ import {
   type ParticipantWithBalance,
 } from '@/db/expenses';
 import { rememberMerchant } from '@/db/merchant-memory';
-import { useAddExpenseIntentContext } from '@/hooks/add-expense-intent-provider';
 import { useTheme } from '@/hooks/use-theme';
 import { formatCurrency, formatDateTime } from '@/lib/format';
 
@@ -27,7 +26,6 @@ export default function ExpenseDetailScreen() {
   const { id, edit } = useLocalSearchParams<{ id: string; edit?: string }>();
   const theme = useTheme();
   const router = useRouter();
-  const { startReceive } = useAddExpenseIntentContext();
   const [expense, setExpense] = useState<ExpenseRow | null>(null);
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   // The add flow's "Confirm & edit amount" lands here with ?edit=1.
@@ -203,16 +201,11 @@ export default function ExpenseDetailScreen() {
           )}
 
           <View style={styles.actions}>
+            <Button title="Delete" variant="danger" onPress={remove} style={styles.deleteAction} />
             <Button title="Edit" variant="secondary" onPress={() => setEditing(true)} style={styles.action} />
-            <Button title="Delete" variant="danger" onPress={remove} style={styles.action} />
           </View>
 
-          {expense.is_split && participants.length > 0 && (
-            <Button
-              title="Record repayment"
-              onPress={() => startReceive({ source: 'expense', expenseId: expense.id })}
-            />
-          )}
+          <Button title="Back to home" onPress={() => router.replace('/')} />
         </>
       ) : (
         <>
@@ -331,6 +324,9 @@ const styles = StyleSheet.create({
   },
   action: {
     flex: 1,
+  },
+  deleteAction: {
+    paddingHorizontal: Spacing.four,
   },
   chips: {
     gap: Spacing.two,
