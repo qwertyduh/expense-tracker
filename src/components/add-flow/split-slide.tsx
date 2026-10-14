@@ -2,9 +2,12 @@ import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
+import { Notice } from '@/components/ui/notice';
 import { Fonts, Spacing } from '@/constants/theme';
+import { useNotice } from '@/hooks/use-notice';
 import { useTheme } from '@/hooks/use-theme';
-import { resplitEvenly } from '@/lib/matching';
+import { sanitizeDecimal } from '@/lib/matching';
+import { reconcileSelfEdit, reconcileSplitEdit } from '@/lib/split-edit';
 
 export type SplitParticipant = { name: string; shareAmount: number };
 
@@ -12,8 +15,10 @@ export type SplitParticipant = { name: string; shareAmount: number };
  * Reported upward so Preview and the DB write know how to record the expense.
  *
  * Semantics: totalAmount is the full bill; selfShare is YOUR portion of it
- * (what the expense row stores as `amount`). The remainder is split EVENLY
- * across the other named participants, each of whom owes their share back.
+ * (what the expense row stores as `amount`). The remainder is split across the
+ * other named participants, each of whom owes their share back. Hand-editing one
+ * participant's share locks it and spreads what is left evenly across the rest,
+ * so the shares always sum back to the bill.
  */
 export type SplitSummary = {
   /** True when your share is less than the full bill (someone else covers the rest). */
@@ -38,44 +43,40 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-function sanitizeDecimal(raw: string): string {
-  let out = raw.replace(/[^0-9.]/g, '');
-  const firstDot = out.indexOf('.');
-  if (firstDot !== -1) {
-    out = out.slice(0, firstDot + 1) + out.slice(firstDot + 1).replace(/\./g, '');
-  }
-  return out;
-}
+// One OTHER participant: their raw amount text (`share`) plus `locked`, which
+// marks a share the user hand-typed so it survives the next rebalance.
+type OtherParticipant = { name: string; share: string; locked: boolean };
 
-// Keep a names array exactly `size` long, preserving what was already typed.
-function resizeNames(names: string[], size: number): string[] {
+// Keep an others array exactly `size` long, preserving what was already typed.
+function resizeOthers(others: OtherParticipant[], size: number): OtherParticipant[] {
   if (size <= 0) return [];
-  const next = names.slice(0, size);
-  while (next.length < size) next.push('');
+  const next = others.slice(0, size);
+  while (next.length < size) next.push({ name: '', share: '', locked: false });
   return next;
 }
 
 export function SplitSlide({ totalAmount, onChange }: SplitSlideProps) {
   const theme = useTheme();
+  const { notice, showNotice } = useNotice();
   const [count, setCount] = useState(1);
   // Raw "your share" text so "12." mid-edit stays representable. For count 1
   // it is always the full bill and the input is hidden.
   const [share, setShare] = useState('');
-  // One name per OTHER participant (length count - 1).
-  const [names, setNames] = useState<string[]>([]);
+  // One entry per OTHER participant (length count - 1).
+  const [others, setOthers] = useState<OtherParticipant[]>([]);
 
-  const report = (nextCount: number, rawShare: string, nextNames: string[]) => {
+  const report = (nextCount: number, rawShare: string, nextOthers: OtherParticipant[]) => {
     const selfShare = round2(
       Math.max(0, Math.min(parseFloat(rawShare) || 0, totalAmount))
     );
-    // Others' shares are split evenly from whatever is left after your share.
+    // Others carry whatever the live rebalance left them with; blank names
+    // still produce a usable row for Preview + the DB write.
     const othersTotal = round2(totalAmount - selfShare);
     const participants: SplitParticipant[] =
       nextCount > 1 && othersTotal > 0
-        ? resplitEvenly(othersTotal, nextCount - 1).map((shareAmount, i) => ({
-            // Blank names still produce a usable row for Preview + the DB write.
-            name: nextNames[i]?.trim() || `Person ${i + 2}`,
-            shareAmount,
+        ? nextOthers.map((other, i) => ({
+            name: other.name.trim() || `Person ${i + 2}`,
+            shareAmount: round2(Math.max(0, parseFloat(other.share) || 0)),
           }))
         : [];
     onChange({
@@ -91,7 +92,7 @@ export function SplitSlide({ totalAmount, onChange }: SplitSlideProps) {
   useEffect(() => {
     setCount(1);
     setShare(String(round2(totalAmount)));
-    setNames([]);
+    setOthers([]);
     report(1, String(round2(totalAmount)), []);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [totalAmount]);
@@ -99,39 +100,104 @@ export function SplitSlide({ totalAmount, onChange }: SplitSlideProps) {
   const evenShare = round2(totalAmount / count);
   const isSolo = count === 1;
 
-  // Live values used to render the per-participant hints without waiting for
-  // a parent re-render of the reported summary.
+  // Live self share used for the per-participant rebalance below.
   const selfShare = round2(Math.max(0, Math.min(parseFloat(share) || 0, totalAmount)));
-  const othersTotal = round2(totalAmount - selfShare);
-  const otherShares =
-    count > 1 && othersTotal > 0 ? resplitEvenly(othersTotal, count - 1) : [];
+  const othersPool = round2(totalAmount - selfShare);
+  const showOthers = count > 1 && othersPool > 0;
+
+  // Run a proposed edit through the shared reconciliation and surface its
+  // result: reject with a notice, or apply the rebalanced shares (and any
+  // fallback readjustment to your share, which is announced).
+  const reconcile = (
+    rows: OtherParticipant[],
+    selfValue: number,
+    typedValue: number | null
+  ): { rows: OtherParticipant[]; self: number; selfChanged: boolean } | null => {
+    const result = reconcileSplitEdit({
+      total: totalAmount,
+      self: selfValue,
+      entries: rows.map((row) => ({ amount: parseFloat(row.share) || 0, locked: row.locked })),
+      typedValue,
+    });
+    if (!result.ok) {
+      showNotice(result.message);
+      return null;
+    }
+    if (result.notice) showNotice(result.notice);
+    return {
+      rows: rows.map((row, i) =>
+        row.locked ? row : { ...row, share: String(result.shares[i]) }
+      ),
+      self: result.self,
+      selfChanged: result.selfChanged,
+    };
+  };
 
   const selectCount = (nextCount: number) => {
-    const even = String(round2(totalAmount / nextCount));
-    const nextNames = resizeNames(names, nextCount - 1);
+    const evenSelf = round2(totalAmount / nextCount);
+    // Fresh split: clear every lock, so everyone else gets an even share.
+    const resized = resizeOthers(others, nextCount - 1).map((other) => ({
+      ...other,
+      locked: false,
+    }));
+    const outcome = reconcile(resized, evenSelf, null);
+    const applied = outcome ? outcome.rows : resized;
     setCount(nextCount);
-    setShare(even);
-    setNames(nextNames);
-    report(nextCount, even, nextNames);
+    setShare(String(evenSelf));
+    setOthers(applied);
+    report(nextCount, String(evenSelf), applied);
   };
 
   const editShare = (raw: string) => {
     const cleaned = sanitizeDecimal(raw);
-    // Enforce the cap while typing: ignore any edit that would exceed the bill.
-    const numeric = parseFloat(cleaned);
-    if (cleaned !== '' && !Number.isNaN(numeric) && numeric > totalAmount) return;
+    // An empty field means 0, not "do nothing".
+    const typed = parseFloat(cleaned) || 0;
+    const result = reconcileSelfEdit({
+      total: totalAmount,
+      self: typed,
+      entries: others.map((other) => ({
+        amount: parseFloat(other.share) || 0,
+        locked: other.locked,
+      })),
+    });
+    if (!result.ok) {
+      showNotice(result.message);
+      return;
+    }
+    // Your field keeps its raw text (including empty); the FIRST participant
+    // takes the whole difference and everyone else stays put.
+    const nextOthers = others.map((other, i) =>
+      i === 0 ? { ...other, share: String(result.shares[i]) } : other
+    );
     setShare(cleaned);
-    report(count, cleaned, names);
+    setOthers(nextOthers);
+    report(count, cleaned, nextOthers);
+  };
+
+  const editOthersShare = (index: number, raw: string) => {
+    const cleaned = sanitizeDecimal(raw);
+    // Lock the row the user just typed in, then rebalance the rest around it.
+    const next = others.map((other, i) =>
+      i === index ? { ...other, share: cleaned, locked: true } : other
+    );
+    const outcome = reconcile(next, selfShare, parseFloat(cleaned) || 0);
+    if (!outcome) return;
+    const nextShare = outcome.selfChanged ? String(outcome.self) : share;
+    setOthers(outcome.rows);
+    if (outcome.selfChanged) setShare(nextShare);
+    report(count, nextShare, outcome.rows);
   };
 
   const editName = (index: number, value: string) => {
-    const nextNames = names.map((name, i) => (i === index ? value : name));
-    setNames(nextNames);
-    report(count, share, nextNames);
+    const next = others.map((other, i) => (i === index ? { ...other, name: value } : other));
+    setOthers(next);
+    report(count, share, next);
   };
 
   return (
     <View style={styles.body}>
+      <Notice message={notice} />
+
       <ThemedText type="subtitle">Who's splitting this?</ThemedText>
       <ThemedText type="small" themeColor="textSecondary">
         How many of you share this bill
@@ -183,12 +249,12 @@ export function SplitSlide({ totalAmount, onChange }: SplitSlideProps) {
             </ThemedText>
           </View>
 
-          {otherShares.length > 0 && (
+          {showOthers && (
             <View style={styles.participants}>
               <ThemedText type="small" themeColor="textSecondary">
-                Who&apos;s covering the rest? Name each person
+                Who&apos;s covering the rest? Name each person and tweak their share
               </ThemedText>
-              {names.map((name, index) => (
+              {others.map((other, index) => (
                 <View key={index} style={styles.participantRow}>
                   <TextInput
                     style={[
@@ -199,7 +265,7 @@ export function SplitSlide({ totalAmount, onChange }: SplitSlideProps) {
                         backgroundColor: theme.backgroundElement,
                       },
                     ]}
-                    value={name}
+                    value={other.name}
                     onChangeText={(value) => editName(index, value)}
                     placeholder="Who are they? / name"
                     placeholderTextColor={theme.textSecondary}
@@ -207,11 +273,29 @@ export function SplitSlide({ totalAmount, onChange }: SplitSlideProps) {
                     inputAccessoryViewButtonLabel="Done"
                     accessibilityLabel={`Name of participant ${index + 2}`}
                   />
-                  <ThemedText type="small" themeColor="textSecondary">
-                    Even share {`₹${otherShares[index].toFixed(2)}`}
-                  </ThemedText>
+                  <TextInput
+                    style={[
+                      styles.shareInput,
+                      {
+                        color: theme.text,
+                        borderColor: theme.border,
+                        backgroundColor: theme.backgroundElement,
+                      },
+                    ]}
+                    value={other.share}
+                    onChangeText={(value) => editOthersShare(index, value)}
+                    placeholder="0"
+                    placeholderTextColor={theme.textSecondary}
+                    selectionColor={theme.backgroundSelected}
+                    keyboardType="decimal-pad"
+                    inputAccessoryViewButtonLabel="Done"
+                    accessibilityLabel={`Share for participant ${index + 2}`}
+                  />
                 </View>
               ))}
+              <ThemedText type="small" themeColor="textSecondary">
+                Editing a share spreads the rest evenly across the others
+              </ThemedText>
             </View>
           )}
         </>
@@ -262,6 +346,16 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.two,
     fontSize: 16,
     fontFamily: Fonts.sans,
+  },
+  shareInput: {
+    width: 96,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Spacing.two,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+    fontSize: 16,
+    fontFamily: Fonts.sans,
+    textAlign: 'right',
   },
   inputRow: {
     flexDirection: 'row',

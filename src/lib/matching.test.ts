@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { normalizeName, nameMatches, rankCandidates, resplitEvenly, allocateGreedy } from './matching';
+import {
+  normalizeName,
+  nameMatches,
+  rankCandidates,
+  resplitEvenly,
+  redistributeSplit,
+  rebalanceParticipants,
+  rebalanceFromSelf,
+  sanitizeDecimal,
+  allocateGreedy,
+} from './matching';
 import type { MatchCandidate } from './matching';
 
 describe('normalizeName', () => {
@@ -127,6 +137,168 @@ describe('resplitEvenly', () => {
 
   it('returns an empty list for no parties', () => {
     expect(resplitEvenly(100, 0)).toEqual([]);
+  });
+});
+
+describe('redistributeSplit', () => {
+  it('splits everything evenly when nothing is locked', () => {
+    expect(
+      redistributeSplit(100, [
+        { amount: 0, locked: false },
+        { amount: 0, locked: false },
+        { amount: 0, locked: false },
+      ])
+    ).toEqual([33.33, 33.33, 33.34]);
+  });
+
+  it('holds a locked amount and spreads the remainder across the rest', () => {
+    // A hand-set to 50 leaves 50 to B and C.
+    expect(
+      redistributeSplit(100, [
+        { amount: 50, locked: true },
+        { amount: 33.33, locked: false },
+        { amount: 33.33, locked: false },
+      ])
+    ).toEqual([50, 25, 25]);
+  });
+
+  it('collapses the remainder onto the last unlocked entry as locks accumulate', () => {
+    // The worked example: A = 50, then B = 10, so C absorbs 40.
+    expect(
+      redistributeSplit(100, [
+        { amount: 50, locked: true },
+        { amount: 10, locked: true },
+        { amount: 25, locked: false },
+      ])
+    ).toEqual([50, 10, 40]);
+  });
+
+  it('leaves locked amounts untouched when every entry is locked', () => {
+    expect(
+      redistributeSplit(100, [
+        { amount: 50, locked: true },
+        { amount: 10, locked: true },
+        { amount: 10, locked: true },
+      ])
+    ).toEqual([50, 10, 10]);
+  });
+
+  it('clamps to zero when locked amounts overshoot the pool', () => {
+    expect(
+      redistributeSplit(100, [
+        { amount: 120, locked: true },
+        { amount: 0, locked: false },
+      ])
+    ).toEqual([120, 0]);
+  });
+
+  it('keeps the unlocked shares summing to the exact remainder', () => {
+    const shares = redistributeSplit(42.5, [
+      { amount: 10, locked: true },
+      { amount: 0, locked: false },
+      { amount: 0, locked: false },
+    ]);
+    expect(shares).toEqual([10, 16.25, 16.25]);
+    expect(shares[1] + shares[2]).toBe(32.5);
+  });
+});
+
+describe('rebalanceParticipants', () => {
+  it('spreads the pool across unlocked participants while any remain', () => {
+    expect(
+      rebalanceParticipants(100, 0, [
+        { amount: 50, locked: true },
+        { amount: 33.33, locked: false },
+        { amount: 33.33, locked: false },
+      ])
+    ).toEqual({ shares: [50, 25, 25], selfDelta: 0, overflows: false });
+  });
+
+  it('falls back to your share once every participant is locked', () => {
+    // A = 50 and B = 40 leave 10 for you.
+    expect(
+      rebalanceParticipants(100, 0, [
+        { amount: 50, locked: true },
+        { amount: 40, locked: true },
+      ])
+    ).toEqual({ shares: [50, 40], selfDelta: 10, overflows: false });
+  });
+
+  it('shrinks your share when locked participants overshoot your portion', () => {
+    // Your share was 20; participants totalling 90 leave you 10.
+    expect(
+      rebalanceParticipants(100, 20, [
+        { amount: 50, locked: true },
+        { amount: 40, locked: true },
+      ])
+    ).toEqual({ shares: [50, 40], selfDelta: -10, overflows: false });
+  });
+
+  it('flags overflow when locked participants alone exceed the pool', () => {
+    expect(
+      rebalanceParticipants(100, 0, [
+        { amount: 150, locked: true },
+        { amount: 0, locked: false },
+      ])
+    ).toMatchObject({ overflows: true });
+  });
+
+  it('flags overflow when the fallback would push your share negative', () => {
+    expect(
+      rebalanceParticipants(100, 0, [
+        { amount: 120, locked: true },
+        { amount: 10, locked: true },
+      ])
+    ).toMatchObject({ overflows: true });
+  });
+});
+
+describe('rebalanceFromSelf', () => {
+  it('puts the whole difference on the first participant', () => {
+    // You go 0 -> 10, so A drops from 50 to 40; B and C are untouched.
+    expect(
+      rebalanceFromSelf(100, 10, [
+        { amount: 50, locked: true },
+        { amount: 25, locked: false },
+        { amount: 25, locked: false },
+      ])
+    ).toEqual({ shares: [40, 25, 25], overflows: false });
+  });
+
+  it('raises the first participant when your share shrinks', () => {
+    expect(
+      rebalanceFromSelf(100, 0, [
+        { amount: 50, locked: true },
+        { amount: 30, locked: true },
+      ])
+    ).toEqual({ shares: [70, 30], overflows: false });
+  });
+
+  it('flags overflow when the first participant would go negative', () => {
+    expect(
+      rebalanceFromSelf(100, 80, [
+        { amount: 50, locked: true },
+        { amount: 30, locked: true },
+      ])
+    ).toMatchObject({ overflows: true });
+  });
+
+  it('has nothing to move with no participants', () => {
+    expect(rebalanceFromSelf(100, 40, [])).toEqual({ shares: [], overflows: false });
+  });
+});
+
+describe('sanitizeDecimal', () => {
+  it('strips non-numeric characters', () => {
+    expect(sanitizeDecimal('₹1,234abc')).toBe('1234');
+  });
+
+  it('keeps only the first decimal point', () => {
+    expect(sanitizeDecimal('12.3.4')).toBe('12.34');
+  });
+
+  it('preserves a trailing decimal point mid-edit', () => {
+    expect(sanitizeDecimal('12.')).toBe('12.');
   });
 });
 

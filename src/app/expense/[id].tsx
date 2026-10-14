@@ -5,6 +5,7 @@ import { Alert, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Chip } from '@/components/ui/chip';
+import { Notice } from '@/components/ui/notice';
 import { Screen, ScreenHeader } from '@/components/ui/screen';
 import { ThemedText } from '@/components/themed-text';
 import { Radius, Spacing } from '@/constants/theme';
@@ -19,20 +20,27 @@ import {
   type ParticipantWithBalance,
 } from '@/db/expenses';
 import { rememberMerchant } from '@/db/merchant-memory';
+import { useNotice } from '@/hooks/use-notice';
 import { useTheme } from '@/hooks/use-theme';
 import { formatCurrency, formatDateTime } from '@/lib/format';
+import { sanitizeDecimal } from '@/lib/matching';
+import { reconcileSelfEdit, reconcileSplitEdit } from '@/lib/split-edit';
 
 export default function ExpenseDetailScreen() {
   const { id, edit } = useLocalSearchParams<{ id: string; edit?: string }>();
   const theme = useTheme();
   const router = useRouter();
+  const { notice, showNotice } = useNotice();
   const [expense, setExpense] = useState<ExpenseRow | null>(null);
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   // The add flow's "Confirm & edit amount" lands here with ?edit=1.
   const [editing, setEditing] = useState(edit === '1');
   const [participants, setParticipants] = useState<ParticipantWithBalance[]>([]);
+  // `locked` marks a share the user hand-edited in this session: it is held
+  // fixed while the remaining, still-unlocked participants absorb the
+  // difference, so the shares always sum back to the bill.
   const [editedParticipants, setEditedParticipants] = useState<
-    { name: string; shareAmount: string }[]
+    { name: string; shareAmount: string; locked: boolean }[]
   >([]);
 
   const [categoryId, setCategoryId] = useState('');
@@ -58,6 +66,7 @@ export default function ExpenseDetailScreen() {
         people.map((person) => ({
           name: person.personName,
           shareAmount: String(person.shareAmount),
+          locked: false,
         }))
       );
     }
@@ -80,6 +89,45 @@ export default function ExpenseDetailScreen() {
     );
   }
 
+  type ParticipantDraft = { name: string; shareAmount: string; locked: boolean };
+
+  // Reconcile a proposed split edit and report back the next rows + self share,
+  // or null when the edit must be rejected. Two guards protect the invariant
+  // (self + participants === total): an amount larger than the bill, and a sum
+  // that would overshoot it. Both surface a non-blocking notice instead of an
+  // Alert, and leave the field untouched. When EVERY participant is locked the
+  // difference has nowhere else to go, so it lands on your share — also
+  // announced, so a readjusted "your share" never changes silently.
+  const reconcile = (params: {
+    rows: ParticipantDraft[];
+    totalValue: number;
+    selfValue: number;
+    typedValue: number | null;
+  }): { rows: ParticipantDraft[]; self: number; selfChanged: boolean } | null => {
+    const result = reconcileSplitEdit({
+      total: params.totalValue,
+      self: params.selfValue,
+      entries: params.rows.map((row) => ({
+        amount: parseFloat(row.shareAmount) || 0,
+        locked: row.locked,
+      })),
+      typedValue: params.typedValue,
+    });
+    if (!result.ok) {
+      showNotice(result.message);
+      return null;
+    }
+    if (result.notice) showNotice(result.notice);
+
+    return {
+      rows: params.rows.map((row, i) =>
+        row.locked ? row : { ...row, shareAmount: String(result.shares[i]) }
+      ),
+      self: result.self,
+      selfChanged: result.selfChanged,
+    };
+  };
+
   const editParticipantName = (index: number, value: string) => {
     setEditedParticipants((prev) =>
       prev.map((person, i) => (i === index ? { ...person, name: value } : person))
@@ -87,9 +135,65 @@ export default function ExpenseDetailScreen() {
   };
 
   const editParticipantShare = (index: number, value: string) => {
-    setEditedParticipants((prev) =>
-      prev.map((person, i) => (i === index ? { ...person, shareAmount: value } : person))
+    const cleaned = sanitizeDecimal(value);
+    // Lock the row the user just typed in, then rebalance the rest around it.
+    const next: ParticipantDraft[] = editedParticipants.map((person, i) =>
+      i === index ? { ...person, shareAmount: cleaned, locked: true } : person
     );
+    const outcome = reconcile({
+      rows: next,
+      totalValue: parseFloat(total) || 0,
+      selfValue: parseFloat(share) || 0,
+      typedValue: parseFloat(cleaned) || 0,
+    });
+    if (!outcome) return;
+    setEditedParticipants(outcome.rows);
+    if (outcome.selfChanged) setShare(String(outcome.self));
+  };
+
+  const editSelfShare = (value: string) => {
+    const cleaned = sanitizeDecimal(value);
+    // An empty field means 0, not "do nothing".
+    const typed = parseFloat(cleaned) || 0;
+    const result = reconcileSelfEdit({
+      total: parseFloat(total) || 0,
+      self: typed,
+      entries: editedParticipants.map((row) => ({
+        amount: parseFloat(row.shareAmount) || 0,
+        locked: row.locked,
+      })),
+    });
+    if (!result.ok) {
+      showNotice(result.message);
+      return;
+    }
+    // Your field keeps its raw text (including empty); the FIRST participant
+    // takes the whole difference and everyone else stays put.
+    setShare(cleaned);
+    setEditedParticipants(
+      editedParticipants.map((row, i) =>
+        i === 0 ? { ...row, shareAmount: String(result.shares[i]) } : row
+      )
+    );
+  };
+
+  const editTotal = (value: string) => {
+    const cleaned = sanitizeDecimal(value);
+    const typed = parseFloat(cleaned) || 0;
+    if (cleaned === '' || typed <= 0) {
+      setTotal(cleaned);
+      return;
+    }
+    const outcome = reconcile({
+      rows: editedParticipants,
+      totalValue: typed,
+      selfValue: parseFloat(share) || 0,
+      typedValue: null,
+    });
+    if (!outcome) return;
+    setTotal(cleaned);
+    setEditedParticipants(outcome.rows);
+    if (outcome.selfChanged) setShare(String(outcome.self));
   };
 
   const save = () => {
@@ -209,6 +313,8 @@ export default function ExpenseDetailScreen() {
         </>
       ) : (
         <>
+          <Notice message={notice} />
+
           <ThemedText type="smallBold">Category</ThemedText>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
             {categories.map((category) => (
@@ -224,7 +330,7 @@ export default function ExpenseDetailScreen() {
           <ThemedText type="smallBold">Total bill</ThemedText>
           <TextInput
             value={total}
-            onChangeText={setTotal}
+            onChangeText={editTotal}
             keyboardType="decimal-pad"
             inputAccessoryViewButtonLabel="Done"
             style={inputStyle}
@@ -233,7 +339,7 @@ export default function ExpenseDetailScreen() {
           <ThemedText type="smallBold">Your share</ThemedText>
           <TextInput
             value={share}
-            onChangeText={setShare}
+            onChangeText={editSelfShare}
             keyboardType="decimal-pad"
             inputAccessoryViewButtonLabel="Done"
             style={inputStyle}
