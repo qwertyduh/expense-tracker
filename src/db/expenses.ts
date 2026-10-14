@@ -142,10 +142,33 @@ const EXPENSE_SELECT = `
   LEFT JOIN categories c ON c.id = e.category_id
 `;
 
-export function listExpenses(limit = 100): ExpenseRow[] {
+export interface ListExpensesOptions {
+  limit?: number;
+  /** Inclusive ISO lower bound on the expense's `occurred_at`. */
+  from?: string;
+  /** Inclusive ISO upper bound on the expense's `occurred_at`. */
+  to?: string;
+}
+
+export function listExpenses({ limit = 100, from, to }: ListExpensesOptions = {}): ExpenseRow[] {
+  const clauses: string[] = [];
+  const params: (string | number)[] = [];
+
+  if (from) {
+    clauses.push('e.occurred_at >= ?');
+    params.push(from);
+  }
+  if (to) {
+    clauses.push('e.occurred_at <= ?');
+    params.push(to);
+  }
+
+  const where = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
+  params.push(limit);
+
   return db.getAllSync<ExpenseRow>(
-    `${EXPENSE_SELECT} ORDER BY e.occurred_at DESC, e.created_at DESC LIMIT ?`,
-    limit
+    `${EXPENSE_SELECT}${where} ORDER BY e.occurred_at DESC, e.created_at DESC LIMIT ?`,
+    ...params
   );
 }
 

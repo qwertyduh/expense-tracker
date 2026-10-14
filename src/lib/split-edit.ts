@@ -95,10 +95,14 @@ export function reconcileSelfEdit(params: {
 
   const result = rebalanceFromSelf(total, self, entries);
   if (result.overflows) {
+    const room = Math.max(
+      0,
+      total - entries.slice(1).reduce((sum, entry) => sum + entry.amount, 0)
+    );
     return {
       ok: false,
       message: `The rest of the split only leaves room for ${formatCurrency(
-        total - entries.slice(1).reduce((sum, entry) => sum + entry.amount, 0)
+        room
       )} as your share, so that change was not applied.`,
     };
   }
