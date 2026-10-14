@@ -1,6 +1,7 @@
+import { DateTimePicker } from '@expo/ui/community/datetime-picker';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import { Dimensions, Pressable, StyleSheet, View } from 'react-native';
+import { Animated, Dimensions, Platform, Pressable, StyleSheet, View } from 'react-native';
 import { PieChart } from 'react-native-chart-kit';
 
 import { Card } from '@/components/ui/card';
@@ -16,8 +17,15 @@ import { countPendingIncomingReceipts } from '@/db/incoming-receipts';
 import { receivedTotalSince, totalOutstanding } from '@/db/settlements';
 import { useAddExpenseIntentContext } from '@/hooks/add-expense-intent-provider';
 import { useTheme } from '@/hooks/use-theme';
+import {
+  EXPENSE_PRESETS,
+  expenseRange,
+  presetLabel,
+  rangeDayCount,
+  type ExpensePreset,
+} from '@/lib/expense-range';
 import { useExpensesChanged } from '@/lib/expenses-changed';
-import { formatCurrency, formatRelative, monthKey, monthLabel } from '@/lib/format';
+import { formatCurrency, formatDate, formatRelative, monthKey, monthLabel } from '@/lib/format';
 
 const CHART_COLORS = [
   '#3C87F7',
@@ -30,34 +38,53 @@ const CHART_COLORS = [
   '#BB6BD9',
 ];
 
-type ExpenseRange = 'thisMonth' | 'lastMonth';
+type CustomField = 'from' | 'to';
 
-const RANGE_LABEL: Record<ExpenseRange, string> = {
-  thisMonth: 'This month',
-  lastMonth: 'Last month',
-};
+function isWithin(iso: string, range: { from?: string; to?: string }): boolean {
+  if (range.from && iso < range.from) return false;
+  if (range.to && iso > range.to) return false;
+  return true;
+}
 
 export default function HomeScreen() {
   const theme = useTheme();
   const router = useRouter();
   const { startManual } = useAddExpenseIntentContext();
   const [expenses, setExpenses] = useState<ExpenseRow[]>([]);
-  const [range, setRange] = useState<ExpenseRange>('thisMonth');
+  const [preset, setPreset] = useState<ExpensePreset>('thisMonth');
+  const [customFrom, setCustomFrom] = useState<Date>(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 6);
+    return d;
+  });
+  const [customTo, setCustomTo] = useState<Date>(() => new Date());
+  const [picking, setPicking] = useState<CustomField | null>(null);
   const [receivedThisMonth, setReceivedThisMonth] = useState(0);
   const [outstanding, setOutstanding] = useState(0);
   const [pendingReceipts, setPendingReceipts] = useState(0);
 
+  // Drives the inline picker's close/open so moving from the start date to the
+  // end date is visible rather than an instant, silent swap.
+  const [pickerAnim] = useState(() => new Animated.Value(0));
+
+  const range = useMemo(
+    () => expenseRange({ preset, customFrom, customTo }),
+    [preset, customFrom, customTo]
+  );
+
   const reload = useCallback(() => {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    // Two months is all the range switcher needs, so bound the query instead of
-    // pulling the whole table.
-    setExpenses(listExpenses({ from: lastMonthStart.toISOString(), limit: 500 }));
-    setReceivedThisMonth(receivedTotalSince(monthStart.toISOString()));
+    const monthStartIso = monthStart.toISOString();
+    // One query covers both the selected range and the current month (the
+    // per-day average baseline), so fetch from whichever starts earlier.
+    const fetchFrom = range.from == null ? undefined : range.from < monthStartIso ? range.from : monthStartIso;
+
+    setExpenses(listExpenses({ from: fetchFrom, limit: 1000 }));
+    setReceivedThisMonth(receivedTotalSince(monthStartIso));
     setOutstanding(totalOutstanding());
     setPendingReceipts(countPendingIncomingReceipts());
-  }, []);
+  }, [range]);
 
   useFocusEffect(
     useCallback(() => {
@@ -75,20 +102,16 @@ export default function HomeScreen() {
     const lastKey = monthKey(new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString());
 
     const thisMonthExpenses = expenses.filter((e) => monthKey(e.occurred_at) === thisKey);
-    const lastMonthExpenses = expenses.filter((e) => monthKey(e.occurred_at) === lastKey);
+    const selected = preset === 'all' ? expenses : expenses.filter((e) => isWithin(e.occurred_at, range));
     const sum = (rows: ExpenseRow[]) => rows.reduce((total, e) => total + e.amount, 0);
 
     const thisTotal = sum(thisMonthExpenses);
-    const lastTotal = sum(lastMonthExpenses);
+    const selectedTotal = sum(selected);
 
-    // Normalise both periods to a per-day average so a partial month and a full
-    // month can be compared fairly.
-    const daysElapsedThisMonth = now.getDate();
-    const daysInLastMonth = new Date(now.getFullYear(), now.getMonth(), 0).getDate();
-    const thisAvgPerDay = thisTotal / Math.max(1, daysElapsedThisMonth);
-    const lastAvgPerDay = lastTotal / Math.max(1, daysInLastMonth);
-
-    const selected = range === 'thisMonth' ? thisMonthExpenses : lastMonthExpenses;
+    const thisAvgPerDay = thisTotal / Math.max(1, now.getDate());
+    // Rows are newest-first, so the last one is the earliest loaded.
+    const earliest = expenses.length > 0 ? expenses[expenses.length - 1].occurred_at : null;
+    const selectedAvgPerDay = selectedTotal / rangeDayCount(range, now, earliest);
 
     const grouped = new Map<string, number>();
     for (const e of selected) {
@@ -105,39 +128,142 @@ export default function HomeScreen() {
       }))
       .sort((a, b) => b.amount - a.amount);
 
+    const rangeLabel =
+      preset === 'thisMonth'
+        ? monthLabel(thisKey)
+        : preset === 'lastMonth'
+          ? monthLabel(lastKey)
+          : presetLabel(preset);
+
     return {
       selected,
-      selectedTotal: range === 'thisMonth' ? thisTotal : lastTotal,
+      selectedTotal,
       thisAvgPerDay,
-      lastAvgPerDay,
+      selectedAvgPerDay,
       byCategory,
-      selectedMonthLabel: monthLabel(range === 'thisMonth' ? thisKey : lastKey),
+      rangeLabel,
     };
-  }, [expenses, theme.text, range]);
+  }, [expenses, theme.text, preset, range]);
 
   const chartWidth = Math.min(Dimensions.get('window').width, 800) - Spacing.four * 2 - Spacing.three * 2;
-  const avgMax = Math.max(stats.thisAvgPerDay, stats.lastAvgPerDay);
-  const selectedCount = stats.selected.length;
+  const avgMax = Math.max(stats.thisAvgPerDay, stats.selectedAvgPerDay);
+  const rangeSubtitle =
+    preset === 'custom'
+      ? `${formatDate(customFrom.toISOString())} – ${formatDate(customTo.toISOString())}`
+      : stats.rangeLabel;
+
+  const openPicker = useCallback(
+    (field: CustomField) => {
+      setPicking(field);
+      pickerAnim.setValue(0);
+      Animated.timing(pickerAnim, {
+        toValue: 1,
+        duration: 160,
+        useNativeDriver: true,
+      }).start();
+    },
+    [pickerAnim]
+  );
+
+  const onPick = useCallback(
+    (field: CustomField, date: Date) => {
+      if (field === 'from') {
+        setCustomFrom(date);
+        // Snap shut, then reopen for the end date so the switch from start to
+        // end is an obvious, animated hand-off.
+        Animated.timing(pickerAnim, {
+          toValue: 0,
+          duration: 110,
+          useNativeDriver: true,
+        }).start(() => {
+          setPicking('to');
+          pickerAnim.setValue(0);
+          Animated.timing(pickerAnim, {
+            toValue: 1,
+            duration: 160,
+            useNativeDriver: true,
+          }).start();
+        });
+      } else {
+        setCustomTo(date);
+      }
+    },
+    [pickerAnim]
+  );
+
+  const pickerValue = picking === 'to' ? customTo : customFrom;
 
   return (
     <View style={styles.container}>
       <Screen>
-        <ScreenHeader title="Expenses" subtitle={`${stats.selectedMonthLabel} · your share`} />
+        <ScreenHeader title="Expenses" subtitle={`${rangeSubtitle} · your share`} />
 
-        <View style={styles.filters}>
-          {(['thisMonth', 'lastMonth'] as const).map((id) => (
-            <Chip
-              key={id}
-              label={RANGE_LABEL[id]}
-              selected={id === range}
-              onPress={() => setRange(id)}
-            />
-          ))}
-        </View>
+        <Card style={styles.filterCard}>
+          <View style={styles.filters}>
+            {EXPENSE_PRESETS.map((item) => (
+              <Chip
+                key={item.id}
+                label={item.label}
+                selected={item.id === preset}
+                onPress={() => {
+                  setPreset(item.id);
+                  setPicking(null);
+                }}
+              />
+            ))}
+          </View>
+
+          {preset === 'custom' ? (
+            <>
+              <View style={styles.customRow}>
+                <DateField
+                  label="From"
+                  date={customFrom}
+                  active={picking === 'from'}
+                  onPress={() => openPicker('from')}
+                />
+                <DateField
+                  label="To"
+                  date={customTo}
+                  active={picking === 'to'}
+                  onPress={() => openPicker('to')}
+                />
+              </View>
+
+              {picking ? (
+                <Animated.View
+                  style={{
+                    opacity: pickerAnim,
+                    transform: [
+                      {
+                        translateY: pickerAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [-6, 0],
+                        }),
+                      },
+                    ],
+                  }}>
+                  <DateTimePicker
+                    key={picking}
+                    value={pickerValue}
+                    mode="date"
+                    presentation="dialog"
+                    display={Platform.OS === 'ios' ? 'inline' : 'default'}
+                    minimumDate={picking === 'to' ? customFrom : undefined}
+                    maximumDate={picking === 'from' ? customTo : new Date()}
+                    accentColor={theme.accent}
+                    onValueChange={(_event, date) => onPick(picking, date)}
+                    onDismiss={() => setPicking(null)}
+                  />
+                </Animated.View>
+              ) : null}
+            </>
+          ) : null}
+        </Card>
 
         <Card>
           <ThemedText type="small" themeColor="textSecondary">
-            {range === 'thisMonth' ? 'Spent this month' : 'Spent last month'}
+            Spent · {rangeSubtitle}
           </ThemedText>
           <ThemedText type="title" style={styles.total}>
             {formatCurrency(stats.selectedTotal)}
@@ -173,14 +299,16 @@ export default function HomeScreen() {
             label="This month"
             value={stats.thisAvgPerDay}
             max={avgMax}
-            active={range === 'thisMonth'}
+            active={preset === 'thisMonth'}
           />
-          <AverageBar
-            label="Last month"
-            value={stats.lastAvgPerDay}
-            max={avgMax}
-            active={range === 'lastMonth'}
-          />
+          {preset === 'thisMonth' ? null : (
+            <AverageBar
+              label={stats.rangeLabel}
+              value={stats.selectedAvgPerDay}
+              max={avgMax}
+              active
+            />
+          )}
         </Card>
 
         {outstanding > 0 ? (
@@ -219,13 +347,13 @@ export default function HomeScreen() {
         ) : null}
 
         <ThemedText type="smallBold" style={styles.sectionTitle}>
-          {RANGE_LABEL[range]}
+          Recent · {stats.rangeLabel}
         </ThemedText>
 
-        {selectedCount === 0 ? (
+        {stats.selected.length === 0 ? (
           <EmptyState
-            title={`No expenses in ${RANGE_LABEL[range].toLowerCase()}`}
-            subtitle="Try the other range, or tap + to add one."
+            title={`No expenses in ${stats.rangeLabel.toLowerCase()}`}
+            subtitle="Try a wider range, or tap + to add one."
           />
         ) : (
           <Card style={styles.listCard}>
@@ -272,7 +400,8 @@ function AverageBar({
       <ThemedText
         type={active ? 'smallBold' : 'small'}
         themeColor={active ? 'text' : 'textSecondary'}
-        style={styles.barLabel}>
+        style={styles.barLabel}
+        numberOfLines={1}>
         {label}
       </ThemedText>
       <View style={[styles.barTrack, { backgroundColor: theme.backgroundSelected }]}>
@@ -293,6 +422,37 @@ function AverageBar({
   );
 }
 
+function DateField({
+  label,
+  date,
+  active,
+  onPress,
+}: {
+  label: string;
+  date: Date;
+  active: boolean;
+  onPress: () => void;
+}) {
+  const theme = useTheme();
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.dateField,
+        {
+          borderColor: active ? theme.accent : theme.border,
+          backgroundColor: theme.background,
+        },
+        pressed && { opacity: 0.7 },
+      ]}>
+      <ThemedText type="small" themeColor={active ? 'accent' : 'textSecondary'}>
+        {label}
+      </ThemedText>
+      <ThemedText type="smallBold">{formatDate(date.toISOString())}</ThemedText>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -300,10 +460,25 @@ const styles = StyleSheet.create({
   total: {
     marginTop: Spacing.one,
   },
+  filterCard: {
+    gap: Spacing.three,
+  },
   filters: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: Spacing.two,
+  },
+  customRow: {
+    flexDirection: 'row',
+    gap: Spacing.two,
+  },
+  dateField: {
+    flex: 1,
+    gap: Spacing.half,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   owedHeader: {
     flexDirection: 'row',
