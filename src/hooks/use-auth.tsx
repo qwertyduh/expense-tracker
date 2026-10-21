@@ -125,6 +125,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       password: input.password,
       options: {
         data: { username, display_name: displayName },
+        emailRedirectTo: 'expensetracker://auth-callback',
       },
     });
     if (error) throw error;

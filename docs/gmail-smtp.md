@@ -31,6 +31,7 @@ Configure Supabase to deliver it through Gmail.
 6. Set **Authentication → URL Configuration → Site URL** to your app scheme/site, and add this exact redirect URL:
    ```
    expensetracker://reset-password
+   expensetracker://auth-callback
    ```
    Supabase will refuse to redirect the email link to the app without it.
 7. In the app, update `.env.local`:

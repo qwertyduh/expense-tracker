@@ -54,10 +54,15 @@ function AuthGate() {
   // screen reads the stored URL so it still has the tokens after navigation.
   useEffect(() => {
     const handleUrl = (url: string | null) => {
-      if (!url?.startsWith('expensetracker://reset-password')) return;
+      if (!url) return;
+      const isReset = url.startsWith('expensetracker://reset-password');
+      const isConfirm = url.startsWith('expensetracker://auth-callback');
+      if (!isReset && !isConfirm) return;
       setPendingResetUrl(url);
       setResetLink(url);
-      if (rootNavigationState?.key) router.replace('/reset-password');
+      if (rootNavigationState?.key) {
+        router.replace(isReset ? '/reset-password' : '/auth-callback');
+      }
     };
 
     Linking.getInitialURL().then(handleUrl);
@@ -76,7 +81,8 @@ function AuthGate() {
   useEffect(() => {
     if (loading || !rootNavigationState?.key || resetLink) return;
     const inAuthGroup = segments[0] === '(auth)';
-    const inResetFlow = segments[0] === 'reset-password';
+    const inResetFlow =
+      segments[0] === 'reset-password' || segments[0] === 'auth-callback';
     if (!session && !inAuthGroup && !inResetFlow) {
       router.replace('/sign-in');
     } else if (session && inAuthGroup) {
@@ -94,6 +100,7 @@ function AuthGate() {
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="add" options={{ presentation: 'modal' }} />
       <Stack.Screen name="reset-password" options={{ headerShown: false }} />
+      <Stack.Screen name="auth-callback" options={{ headerShown: false }} />
       <Stack.Screen name="receive" options={{ presentation: 'modal' }} />
       <Stack.Screen name="friends" options={{ headerShown: false }} />
       <Stack.Screen name="debts" options={{ headerShown: false }} />
