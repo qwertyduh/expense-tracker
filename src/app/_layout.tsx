@@ -1,15 +1,27 @@
-import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
+import {
+  DarkTheme,
+  DefaultTheme,
+  Stack,
+  ThemeProvider,
+  useRouter,
+  useRootNavigationState,
+  useSegments,
+} from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { useEffect } from 'react';
-import { AppState, useColorScheme } from 'react-native';
+import { useEffect, useState } from 'react';
+import { AppState, Linking, StyleSheet, useColorScheme, View } from 'react-native';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { initDatabase } from '@/db/schema';
 import { seedDatabase } from '@/db/seed';
 import { AddExpenseIntentProvider } from '@/hooks/add-expense-intent-provider';
+import { AuthProvider, useAuth } from '@/hooks/use-auth';
 import { useAppIntentDispatcher } from '@/hooks/useAppIntentDispatcher';
+import { loadFriends } from '@/lib/friends';
 import { syncMerchantCategoryMap } from '@/lib/merchant-category-sync';
 import { flushPendingCaptures } from '@/lib/pending-captures';
+import { setPendingResetUrl } from '@/lib/reset-link';
+import { flushOutbox } from '@/lib/sync';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -29,6 +41,68 @@ function AppIntentListener() {
   return null;
 }
 
+// Mandatory account gate. Supabase restores a cached session from SecureStore,
+// so signing in once is enough for normal offline use afterwards.
+function AuthGate() {
+  const { loading, session } = useAuth();
+  const segments = useSegments();
+  const rootNavigationState = useRootNavigationState();
+  const router = useRouter();
+  const [resetLink, setResetLink] = useState<string | null>(null);
+
+  // Capture reset links before the auth redirect can swallow them. The reset
+  // screen reads the stored URL so it still has the tokens after navigation.
+  useEffect(() => {
+    const handleUrl = (url: string | null) => {
+      if (!url?.startsWith('expensetracker://reset-password')) return;
+      setPendingResetUrl(url);
+      setResetLink(url);
+      if (rootNavigationState?.key) router.replace('/reset-password');
+    };
+
+    Linking.getInitialURL().then(handleUrl);
+    const subscription = Linking.addEventListener('url', (event) => handleUrl(event.url));
+    return () => subscription.remove();
+  }, [rootNavigationState?.key, router]);
+
+  // Once the reset screen has established a session (or the user backed out to
+  // the auth group), resume normal gating.
+  useEffect(() => {
+    if (resetLink && (session || segments[0] === '(auth)')) {
+      setResetLink(null);
+    }
+  }, [resetLink, segments, session]);
+
+  useEffect(() => {
+    if (loading || !rootNavigationState?.key || resetLink) return;
+    const inAuthGroup = segments[0] === '(auth)';
+    const inResetFlow = segments[0] === 'reset-password';
+    if (!session && !inAuthGroup && !inResetFlow) {
+      router.replace('/sign-in');
+    } else if (session && inAuthGroup) {
+      router.replace('/');
+    }
+  }, [loading, resetLink, rootNavigationState?.key, router, segments, session]);
+
+  if (loading) {
+    return <View style={styles.gate} />;
+  }
+
+  return (
+    <Stack>
+      <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+      <Stack.Screen name="add" options={{ presentation: 'modal' }} />
+      <Stack.Screen name="reset-password" options={{ headerShown: false }} />
+      <Stack.Screen name="receive" options={{ presentation: 'modal' }} />
+      <Stack.Screen name="friends" options={{ headerShown: false }} />
+      <Stack.Screen name="debts" options={{ headerShown: false }} />
+      <Stack.Screen name="owed" options={{ headerShown: false }} />
+      <Stack.Screen name="person/[id]" options={{ headerShown: false }} />
+    </Stack>
+  );
+}
+
 export default function RootLayout() {
   const colorScheme = useColorScheme();
 
@@ -39,6 +113,8 @@ export default function RootLayout() {
       if (state === 'active') {
         syncMerchantCategoryMap();
         flushPendingCaptures();
+        flushOutbox().catch(() => {});
+        loadFriends().catch(() => {});
       }
     });
     return () => subscription.remove();
@@ -47,16 +123,19 @@ export default function RootLayout() {
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <AnimatedSplashOverlay />
-      <AddExpenseIntentProvider>
-        <AppIntentListener />
-        <Stack>
-          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-          <Stack.Screen name="add" options={{ presentation: 'modal' }} />
-          <Stack.Screen name="receive" options={{ presentation: 'modal' }} />
-          <Stack.Screen name="owed" options={{ headerShown: false }} />
-          <Stack.Screen name="person/[id]" options={{ headerShown: false }} />
-        </Stack>
-      </AddExpenseIntentProvider>
+      <AuthProvider>
+        <AddExpenseIntentProvider>
+          <AppIntentListener />
+          <AuthGate />
+        </AddExpenseIntentProvider>
+      </AuthProvider>
     </ThemeProvider>
   );
 }
+
+const styles = StyleSheet.create({
+  gate: {
+    flex: 1,
+    backgroundColor: '#0B0B0C',
+  },
+});

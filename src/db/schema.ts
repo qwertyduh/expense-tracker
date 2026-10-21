@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS people (
   id TEXT PRIMARY KEY,
   display_name TEXT NOT NULL,
   is_self INTEGER NOT NULL DEFAULT 0,
+  remote_user_id TEXT,
+  username TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -35,6 +37,9 @@ CREATE TABLE IF NOT EXISTS expenses (
   bank_source TEXT,
   raw_sms_text TEXT,
   is_split INTEGER NOT NULL DEFAULT 0,
+  split_pending INTEGER NOT NULL DEFAULT 0,
+  shared_expense_id TEXT,
+  sync_status TEXT NOT NULL DEFAULT 'local',
   occurred_at TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -44,7 +49,10 @@ CREATE TABLE IF NOT EXISTS expense_participants (
   id TEXT PRIMARY KEY,
   expense_id TEXT NOT NULL REFERENCES expenses(id) ON DELETE CASCADE,
   person_id TEXT NOT NULL REFERENCES people(id),
+  participant_user_id TEXT,
   share_amount REAL NOT NULL,
+  share_status TEXT NOT NULL DEFAULT 'local',
+  remote_participant_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -77,6 +85,8 @@ CREATE TABLE IF NOT EXISTS settlements (
   source TEXT NOT NULL CHECK(source IN ('manual', 'sms')),
   bank_source TEXT,
   raw_sms_text TEXT,
+  remote_settlement_id TEXT,
+  sync_status TEXT NOT NULL DEFAULT 'local',
   occurred_at TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -136,11 +146,89 @@ CREATE TABLE IF NOT EXISTS incoming_receipts (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+-- Local cache of accepted friends and pending requests, so the split flow can
+-- offer usernames while offline.
+CREATE TABLE IF NOT EXISTS friend_cache (
+  user_id TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending', 'accepted', 'declined', 'blocked')),
+  direction TEXT CHECK(direction IN ('incoming', 'outgoing')),
+  friendship_id TEXT,
+  updated_at TEXT NOT NULL
+);
+
+-- Mirror of shared-expense participant rows involving this user. One row per
+-- participant share: direction says whether they owe you or you owe them.
+CREATE TABLE IF NOT EXISTS shared_debt_cache (
+  id TEXT PRIMARY KEY,
+  expense_id TEXT NOT NULL,
+  direction TEXT NOT NULL CHECK(direction IN ('they_owe_me', 'i_owe_them')),
+  counterparty_user_id TEXT NOT NULL,
+  counterparty_username TEXT NOT NULL,
+  counterparty_display_name TEXT NOT NULL,
+  total_amount REAL NOT NULL,
+  label TEXT,
+  occurred_at TEXT NOT NULL,
+  share_amount REAL NOT NULL,
+  settled_amount REAL NOT NULL DEFAULT 0,
+  status TEXT NOT NULL CHECK(status IN ('pending', 'paid', 'disputed')),
+  updated_at TEXT NOT NULL
+);
+
+-- Durable queue for writes that must reach Supabase. Local-only rows are never
+-- enqueued. entity_id is the local row id (also the remote id where possible).
+CREATE TABLE IF NOT EXISTS sync_outbox (
+  id TEXT PRIMARY KEY,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- Small key/value store for pull cursors and other sync bookkeeping.
+CREATE TABLE IF NOT EXISTS sync_state (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 `;
 
 export function initDatabase(): void {
   db.execSync(SCHEMA_SQL);
+  migrateAddColumns();
   migrateUpiAliasesToHandles();
+}
+
+// `CREATE TABLE IF NOT EXISTS` cannot add columns to an existing install, so
+// every schema addition also needs an idempotent ALTER here.
+function addColumnIfMissing(table: string, column: string, definition: string): void {
+  const columns = db.getAllSync<{ name: string }>(`PRAGMA table_info(${table})`);
+  if (columns.some((existing) => existing.name === column)) return;
+  db.execSync(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+function migrateAddColumns(): void {
+  addColumnIfMissing('people', 'remote_user_id', 'TEXT');
+  addColumnIfMissing('people', 'username', 'TEXT');
+  addColumnIfMissing('expenses', 'split_pending', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing('expenses', 'shared_expense_id', 'TEXT');
+  addColumnIfMissing('expenses', 'sync_status', "TEXT NOT NULL DEFAULT 'local'");
+  addColumnIfMissing('expense_participants', 'participant_user_id', 'TEXT');
+  addColumnIfMissing('expense_participants', 'share_status', "TEXT NOT NULL DEFAULT 'local'");
+  addColumnIfMissing('expense_participants', 'remote_participant_id', 'TEXT');
+  addColumnIfMissing('settlements', 'remote_settlement_id', 'TEXT');
+  addColumnIfMissing('settlements', 'sync_status', "TEXT NOT NULL DEFAULT 'local'");
+  db.execSync(
+    'CREATE UNIQUE INDEX IF NOT EXISTS people_remote_user_idx ON people(remote_user_id) WHERE remote_user_id IS NOT NULL'
+  );
 }
 
 // One-time fold of the legacy upi_aliases table into person_handles. Guarded on

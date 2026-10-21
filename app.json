@@ -52,7 +52,9 @@
         }
       ],
       "@bacons/apple-targets",
-      "expo-app-intents"
+      "expo-app-intents",
+      "expo-secure-store",
+      "expo-notifications"
     ],
     "experiments": {
       "typedRoutes": true,

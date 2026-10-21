@@ -1,15 +1,22 @@
 import { useEffect, useState } from 'react';
-import { Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { Notice } from '@/components/ui/notice';
 import { Fonts, Spacing } from '@/constants/theme';
+import { listCachedAcceptedFriends, type CachedFriend } from '@/db/friends';
 import { useNotice } from '@/hooks/use-notice';
 import { useTheme } from '@/hooks/use-theme';
+import { loadFriends } from '@/lib/friends';
 import { sanitizeDecimal } from '@/lib/matching';
 import { reconcileSelfEdit, reconcileSplitEdit } from '@/lib/split-edit';
 
-export type SplitParticipant = { name: string; shareAmount: number };
+export type SplitParticipant = {
+  name: string;
+  shareAmount: number;
+  username?: string;
+  remoteUserId?: string;
+};
 
 /**
  * Reported upward so Preview and the DB write know how to record the expense.
@@ -44,8 +51,15 @@ function round2(n: number): number {
 }
 
 // One OTHER participant: their raw amount text (`share`) plus `locked`, which
-// marks a share the user hand-typed so it survives the next rebalance.
-type OtherParticipant = { name: string; share: string; locked: boolean };
+// marks a share the user hand-typed so it survives the next rebalance. A linked
+// account carries the remote user id + username; a bare name is local-only.
+type OtherParticipant = {
+  name: string;
+  share: string;
+  locked: boolean;
+  username?: string;
+  remoteUserId?: string;
+};
 
 // Keep an others array exactly `size` long, preserving what was already typed.
 function resizeOthers(others: OtherParticipant[], size: number): OtherParticipant[] {
@@ -64,6 +78,22 @@ export function SplitSlide({ totalAmount, onChange }: SplitSlideProps) {
   const [share, setShare] = useState('');
   // One entry per OTHER participant (length count - 1).
   const [others, setOthers] = useState<OtherParticipant[]>([]);
+  const [friends, setFriends] = useState<CachedFriend[]>(() => listCachedAcceptedFriends());
+  const [friendPicker, setFriendPicker] = useState<number | null>(null);
+
+  // Refresh the cached friend list in the background; the cache makes the
+  // picker usable offline too.
+  useEffect(() => {
+    let active = true;
+    loadFriends()
+      .then(() => {
+        if (active) setFriends(listCachedAcceptedFriends());
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const report = (nextCount: number, rawShare: string, nextOthers: OtherParticipant[]) => {
     const selfShare = round2(
@@ -77,6 +107,8 @@ export function SplitSlide({ totalAmount, onChange }: SplitSlideProps) {
         ? nextOthers.map((other, i) => ({
             name: other.name.trim() || `Person ${i + 2}`,
             shareAmount: round2(Math.max(0, parseFloat(other.share) || 0)),
+            username: other.username,
+            remoteUserId: other.remoteUserId,
           }))
         : [];
     onChange({
@@ -189,16 +221,38 @@ export function SplitSlide({ totalAmount, onChange }: SplitSlideProps) {
   };
 
   const editName = (index: number, value: string) => {
-    const next = others.map((other, i) => (i === index ? { ...other, name: value } : other));
+    // Typing a different name detaches the account link: the user is now
+    // describing a local-only participant.
+    const next = others.map((other, i) =>
+      i === index
+        ? { ...other, name: value, username: undefined, remoteUserId: undefined }
+        : other
+    );
     setOthers(next);
     report(count, share, next);
+  };
+
+  const chooseFriend = (index: number, friend: CachedFriend) => {
+    const next = others.map((other, i) =>
+      i === index
+        ? {
+            ...other,
+            name: friend.displayName,
+            username: friend.username,
+            remoteUserId: friend.userId,
+          }
+        : other
+    );
+    setOthers(next);
+    report(count, share, next);
+    setFriendPicker(null);
   };
 
   return (
     <View style={styles.body}>
       <Notice message={notice} />
 
-      <ThemedText type="subtitle">Who's splitting this?</ThemedText>
+      <ThemedText type="subtitle">Who&apos;s splitting this?</ThemedText>
       <ThemedText type="small" themeColor="textSecondary">
         How many of you share this bill
       </ThemedText>
@@ -255,42 +309,53 @@ export function SplitSlide({ totalAmount, onChange }: SplitSlideProps) {
                 Who&apos;s covering the rest? Name each person and tweak their share
               </ThemedText>
               {others.map((other, index) => (
-                <View key={index} style={styles.participantRow}>
-                  <TextInput
-                    style={[
-                      styles.nameInput,
-                      {
-                        color: theme.text,
-                        borderColor: theme.border,
-                        backgroundColor: theme.backgroundElement,
-                      },
-                    ]}
-                    value={other.name}
-                    onChangeText={(value) => editName(index, value)}
-                    placeholder="Who are they? / name"
-                    placeholderTextColor={theme.textSecondary}
-                    selectionColor={theme.backgroundSelected}
-                    inputAccessoryViewButtonLabel="Done"
-                    accessibilityLabel={`Name of participant ${index + 2}`}
-                  />
-                  <TextInput
-                    style={[
-                      styles.shareInput,
-                      {
-                        color: theme.text,
-                        borderColor: theme.border,
-                        backgroundColor: theme.backgroundElement,
-                      },
-                    ]}
-                    value={other.share}
-                    onChangeText={(value) => editOthersShare(index, value)}
-                    placeholder="0"
-                    placeholderTextColor={theme.textSecondary}
-                    selectionColor={theme.backgroundSelected}
-                    keyboardType="decimal-pad"
-                    inputAccessoryViewButtonLabel="Done"
-                    accessibilityLabel={`Share for participant ${index + 2}`}
-                  />
+                <View key={index} style={styles.participantBlock}>
+                  <View style={styles.participantRow}>
+                    <TextInput
+                      style={[
+                        styles.nameInput,
+                        {
+                          color: theme.text,
+                          borderColor: theme.border,
+                          backgroundColor: theme.backgroundElement,
+                        },
+                      ]}
+                      value={other.name}
+                      onChangeText={(value) => editName(index, value)}
+                      placeholder="Who are they? / name"
+                      placeholderTextColor={theme.textSecondary}
+                      selectionColor={theme.backgroundSelected}
+                      inputAccessoryViewButtonLabel="Done"
+                      accessibilityLabel={`Name of participant ${index + 2}`}
+                    />
+                    <TextInput
+                      style={[
+                        styles.shareInput,
+                        {
+                          color: theme.text,
+                          borderColor: theme.border,
+                          backgroundColor: theme.backgroundElement,
+                        },
+                      ]}
+                      value={other.share}
+                      onChangeText={(value) => editOthersShare(index, value)}
+                      placeholder="0"
+                      placeholderTextColor={theme.textSecondary}
+                      selectionColor={theme.backgroundSelected}
+                      keyboardType="decimal-pad"
+                      inputAccessoryViewButtonLabel="Done"
+                      accessibilityLabel={`Share for participant ${index + 2}`}
+                    />
+                  </View>
+                  <Pressable onPress={() => setFriendPicker(index)} hitSlop={4}>
+                    <ThemedText
+                      type="small"
+                      themeColor={other.username ? 'accent' : 'textSecondary'}>
+                      {other.username
+                        ? `@${other.username} · tap to change`
+                        : 'Link a friend account (optional)'}
+                    </ThemedText>
+                  </Pressable>
                 </View>
               ))}
               <ThemedText type="small" themeColor="textSecondary">
@@ -300,6 +365,61 @@ export function SplitSlide({ totalAmount, onChange }: SplitSlideProps) {
           )}
         </>
       )}
+
+      <Modal
+        visible={friendPicker != null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setFriendPicker(null)}>
+        <Pressable style={styles.backdrop} onPress={() => setFriendPicker(null)}>
+          <View
+            style={[styles.pickerCard, { backgroundColor: theme.backgroundElement }]}
+            onStartShouldSetResponder={() => true}>
+            <ThemedText type="smallBold">Choose a friend</ThemedText>
+            <ThemedText type="small" themeColor="textSecondary">
+              Linked friends see this as a shared expense. Leave it unlinked to
+              keep the participant local-only.
+            </ThemedText>
+            {friends.length === 0 ? (
+              <ThemedText type="small" themeColor="textSecondary">
+                No friends yet. Add one from Settings → Friends.
+              </ThemedText>
+            ) : (
+              <ScrollView style={styles.pickerList}>
+                {friends.map((friend) => {
+                  const usedByOther = others.some(
+                    (other, i) => i !== friendPicker && other.remoteUserId === friend.userId
+                  );
+                  return (
+                    <Pressable
+                      key={friend.userId}
+                      disabled={usedByOther}
+                      onPress={() => {
+                        if (friendPicker != null) chooseFriend(friendPicker, friend);
+                      }}
+                      style={[styles.pickerRow, { borderColor: theme.border }]}>
+                      <View style={styles.rowMain}>
+                        <ThemedText type="default">{friend.displayName}</ThemedText>
+                        <ThemedText type="small" themeColor="textSecondary">
+                          @{friend.username}
+                        </ThemedText>
+                      </View>
+                      <ThemedText
+                        type="small"
+                        themeColor={usedByOther ? 'textSecondary' : 'accent'}>
+                        {usedByOther ? 'Added' : 'Use'}
+                      </ThemedText>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+            )}
+            <Pressable onPress={() => setFriendPicker(null)} hitSlop={8}>
+              <ThemedText type="linkPrimary">Close</ThemedText>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -333,10 +453,43 @@ const styles = StyleSheet.create({
     width: '100%',
     gap: Spacing.two,
   },
+  participantBlock: {
+    gap: Spacing.one,
+  },
   participantRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.two,
+  },
+  rowMain: {
+    flexShrink: 1,
+    gap: Spacing.half,
+  },
+  backdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: Spacing.four,
+  },
+  pickerCard: {
+    width: '100%',
+    maxWidth: 420,
+    maxHeight: '70%',
+    borderRadius: 16,
+    padding: Spacing.three,
+    gap: Spacing.two,
+  },
+  pickerList: {
+    flexGrow: 0,
+  },
+  pickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.three,
+    paddingVertical: Spacing.three,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
   nameInput: {
     flex: 1,

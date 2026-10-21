@@ -9,12 +9,14 @@ export function ListRow({
   value,
   onPress,
   right,
+  danger,
 }: {
   title: string;
   subtitle?: string;
   value?: string;
   onPress?: () => void;
   right?: React.ReactNode;
+  danger?: boolean;
 }) {
   return (
     <Pressable
@@ -22,7 +24,7 @@ export function ListRow({
       disabled={!onPress}
       style={({ pressed }) => [styles.row, pressed && onPress ? { opacity: 0.7 } : null]}>
       <View style={styles.left}>
-        <ThemedText type="default" numberOfLines={1}>
+        <ThemedText type="default" numberOfLines={1} themeColor={danger ? 'danger' : undefined}>
           {title}
         </ThemedText>
         {subtitle ? (
@@ -33,7 +35,7 @@ export function ListRow({
       </View>
       <View style={styles.right}>
         {value ? (
-          <ThemedText type="smallBold" numberOfLines={1}>
+          <ThemedText type="smallBold" numberOfLines={1} themeColor={danger ? 'danger' : undefined}>
             {value}
           </ThemedText>
         ) : null}

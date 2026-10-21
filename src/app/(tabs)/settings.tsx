@@ -1,5 +1,5 @@
 import * as Linking from 'expo-linking';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Alert, Modal, Platform, Pressable, StyleSheet, Switch, TextInput, View } from 'react-native';
 
@@ -25,6 +25,7 @@ import {
 } from '@/db/person-handles';
 import { paymentDetection, type DetectionMode } from '@/lib/payment-detection';
 import { syncMerchantCategoryMap } from '@/lib/merchant-category-sync';
+import { useAuth } from '@/hooks/use-auth';
 import { useTheme } from '@/hooks/use-theme';
 
 const MODES: { value: DetectionMode; label: string; hint: string }[] = [
@@ -35,6 +36,8 @@ const MODES: { value: DetectionMode; label: string; hint: string }[] = [
 
 export default function SettingsScreen() {
   const theme = useTheme();
+  const router = useRouter();
+  const { profile, signOut } = useAuth();
   const [selfName, setSelfName] = useState('');
   const [memory, setMemory] = useState<MerchantMemoryRow[]>([]);
   const [people, setPeople] = useState<PersonWithHandles[]>([]);
@@ -131,6 +134,19 @@ export default function SettingsScreen() {
     ]);
   };
 
+  const confirmSignOut = () => {
+    Alert.alert('Sign out?', 'Shared expenses will stop syncing until you sign in again.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Sign out',
+        style: 'destructive',
+        onPress: () => {
+          signOut().catch(() => {});
+        },
+      },
+    ]);
+  };
+
   const resetMemory = () => {
     Alert.alert('Reset learned payees?', 'All remembered payee → category mappings will be cleared.', [
       { text: 'Cancel', style: 'cancel' },
@@ -151,6 +167,22 @@ export default function SettingsScreen() {
   return (
     <Screen>
       <ScreenHeader title="Settings" />
+
+      <Card style={styles.detectionCard}>
+        <ThemedText type="small" themeColor="textSecondary">
+          Account
+        </ThemedText>
+        <ThemedText type="subtitle">{profile?.display_name ?? selfName}</ThemedText>
+        <ThemedText type="small" themeColor="textSecondary">
+          @{profile?.username ?? 'not signed in'}
+        </ThemedText>
+        <Button
+          title="Friends"
+          variant="secondary"
+          onPress={() => router.push('/friends')}
+        />
+        <Button title="Sign out" variant="ghost" onPress={confirmSignOut} />
+      </Card>
 
       <Card>
         <ThemedText type="small" themeColor="textSecondary">

@@ -12,10 +12,15 @@ import { ListRow } from '@/components/ui/list-row';
 import { Screen, ScreenHeader } from '@/components/ui/screen';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
-import { listExpenses, type ExpenseRow } from '@/db/expenses';
+import {
+  listExpenses,
+  listPendingSplitExpenses,
+  type ExpenseRow,
+} from '@/db/expenses';
 import { countPendingIncomingReceipts } from '@/db/incoming-receipts';
 import { receivedTotalSince, totalOutstanding } from '@/db/settlements';
 import { useAddExpenseIntentContext } from '@/hooks/add-expense-intent-provider';
+import { useSharedDebts } from '@/hooks/use-shared-debts';
 import { useTheme } from '@/hooks/use-theme';
 import {
   EXPENSE_PRESETS,
@@ -51,6 +56,7 @@ export default function HomeScreen() {
   const router = useRouter();
   const { startManual } = useAddExpenseIntentContext();
   const [expenses, setExpenses] = useState<ExpenseRow[]>([]);
+  const [pendingSplits, setPendingSplits] = useState<ExpenseRow[]>([]);
   const [preset, setPreset] = useState<ExpensePreset>('thisMonth');
   const [customFrom, setCustomFrom] = useState<Date>(() => {
     const d = new Date();
@@ -62,6 +68,7 @@ export default function HomeScreen() {
   const [receivedThisMonth, setReceivedThisMonth] = useState(0);
   const [outstanding, setOutstanding] = useState(0);
   const [pendingReceipts, setPendingReceipts] = useState(0);
+  const { balances: sharedBalances } = useSharedDebts();
 
   // Drives the inline picker's close/open so moving from the start date to the
   // end date is visible rather than an instant, silent swap.
@@ -81,6 +88,7 @@ export default function HomeScreen() {
     const fetchFrom = range.from == null ? undefined : range.from < monthStartIso ? range.from : monthStartIso;
 
     setExpenses(listExpenses({ from: fetchFrom, limit: 1000 }));
+    setPendingSplits(listPendingSplitExpenses());
     setReceivedThisMonth(receivedTotalSince(monthStartIso));
     setOutstanding(totalOutstanding());
     setPendingReceipts(countPendingIncomingReceipts());
@@ -145,6 +153,10 @@ export default function HomeScreen() {
     };
   }, [expenses, theme.text, preset, range]);
 
+  const sharedNet = useMemo(
+    () => sharedBalances.reduce((sum, balance) => sum + balance.net, 0),
+    [sharedBalances]
+  );
   const chartWidth = Math.min(Dimensions.get('window').width, 800) - Spacing.four * 2 - Spacing.three * 2;
   const avgMax = Math.max(stats.thisAvgPerDay, stats.selectedAvgPerDay);
   const rangeSubtitle =
@@ -197,6 +209,36 @@ export default function HomeScreen() {
     <View style={styles.container}>
       <Screen>
         <ScreenHeader title="Expenses" subtitle={`${rangeSubtitle} · your share`} />
+
+        {pendingSplits.length > 0 ? (
+          <Card style={styles.pendingCard}>
+            <ThemedText type="smallBold" style={{ color: theme.danger }}>
+              Split needs people
+            </ThemedText>
+            {pendingSplits.map((expense) => (
+              <Pressable
+                key={expense.id}
+                onPress={() => router.push(`/expense/${expense.id}?edit=1`)}
+                style={({ pressed }) => [
+                  styles.pendingRow,
+                  { borderColor: theme.border },
+                  pressed ? styles.pressed : null,
+                ]}>
+                <View style={styles.pendingMain}>
+                  <ThemedText type="default" numberOfLines={1} style={{ color: theme.danger }}>
+                    {expense.merchant ?? expense.label ?? expense.category_name ?? 'Expense'}
+                  </ThemedText>
+                  <ThemedText type="small" style={{ color: theme.danger }}>
+                    {formatCurrency(expense.total_amount)} · tap to assign people
+                  </ThemedText>
+                </View>
+                <ThemedText type="smallBold" style={{ color: theme.danger }}>
+                  {formatRelative(expense.occurred_at)}
+                </ThemedText>
+              </Pressable>
+            ))}
+          </Card>
+        ) : null}
 
         <Card style={styles.filterCard}>
           <View style={styles.filters}>
@@ -331,6 +373,34 @@ export default function HomeScreen() {
           </Pressable>
         ) : null}
 
+        {sharedBalances.length > 0 ? (
+          <Pressable
+            onPress={() => router.push('/debts')}
+            style={({ pressed }) => (pressed ? styles.pressed : null)}>
+            <Card>
+              <View style={styles.owedHeader}>
+                <ThemedText type="small" themeColor="textSecondary">
+                  Shared with friends
+                </ThemedText>
+                <ThemedText type="small" themeColor="accent">
+                  View all ›
+                </ThemedText>
+              </View>
+              <ThemedText
+                type="title"
+                style={[
+                  styles.total,
+                  { color: sharedNet >= 0 ? theme.success : theme.danger },
+                ]}>
+                {formatCurrency(Math.abs(sharedNet))}
+              </ThemedText>
+              <ThemedText type="small" themeColor="textSecondary">
+                {sharedNet >= 0 ? 'Owed to you' : 'You owe'}
+              </ThemedText>
+            </Card>
+          </Pressable>
+        ) : null}
+
         {pendingReceipts > 0 ? (
           <Pressable
             onPress={() => router.push('/receive')}
@@ -363,6 +433,7 @@ export default function HomeScreen() {
                 title={expense.merchant ?? expense.label ?? expense.category_name ?? 'Expense'}
                 subtitle={`${expense.category_name ?? 'Uncategorized'} · ${formatRelative(expense.occurred_at)}`}
                 value={formatCurrency(expense.amount)}
+                danger={expense.split_pending === 1}
                 onPress={() => router.push(`/expense/${expense.id}`)}
               />
             ))}
@@ -462,6 +533,21 @@ const styles = StyleSheet.create({
   },
   filterCard: {
     gap: Spacing.three,
+  },
+  pendingCard: {
+    gap: Spacing.one,
+  },
+  pendingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.three,
+    paddingVertical: Spacing.three,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  pendingMain: {
+    flexShrink: 1,
+    gap: Spacing.half,
   },
   filters: {
     flexDirection: 'row',

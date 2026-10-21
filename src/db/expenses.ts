@@ -1,6 +1,6 @@
 import { randomUUID } from 'expo-crypto';
 
-import { findOrCreatePerson } from './people';
+import { findOrCreateAccountPerson, findOrCreatePerson } from './people';
 import { db } from './schema';
 
 // The expense row's `amount` is YOUR share. total_amount is the full bill.
@@ -17,14 +17,38 @@ export type InsertExpenseInput = {
   bankSource: string | null;
   rawSmsText: string | null;
   occurredAt: string; // ISO — actual transaction time
+  /** True while a split exists but the people/shares are not assigned yet. */
+  splitPending?: boolean;
   /** Named split participants and the share each owes; omitted when unsplit. */
-  participants?: { name: string; shareAmount: number }[];
+  participants?: {
+    name: string;
+    shareAmount: number;
+    username?: string;
+    remoteUserId?: string;
+  }[];
+};
+
+export type LinkedParticipant = {
+  username: string;
+  displayName: string;
+  shareAmount: number;
+};
+
+export type SharedExpenseDraft = {
+  id: string;
+  totalAmount: number;
+  ownerShare: number;
+  label: string | null;
+  occurredAt: string;
+  participants: LinkedParticipant[];
 };
 
 export type InsertExpenseResult = {
   expenseId: string;
   amount: number; // your share
   isSplit: boolean;
+  /** Present when at least one participant is a linked account. */
+  sharedExpense: SharedExpenseDraft | null;
 };
 
 function round2(n: number): number {
@@ -39,6 +63,15 @@ export function insertExpense(input: InsertExpenseInput): InsertExpenseResult {
   const now = new Date().toISOString();
   const amount = round2(Math.max(0, Math.min(input.selfShare, input.totalAmount)));
   const isSplit = amount < round2(input.totalAmount);
+  const splitPending = input.splitPending ? 1 : 0;
+  const linkedParticipants: LinkedParticipant[] = (input.participants ?? [])
+    .filter((participant) => participant.remoteUserId && participant.username)
+    .map((participant) => ({
+      username: participant.username!.toLowerCase(),
+      displayName: participant.name.trim() || participant.username!,
+      shareAmount: round2(participant.shareAmount),
+    }));
+  const sharedExpenseId = linkedParticipants.length > 0 ? expenseId : null;
 
   const snapshot = {
     id: expenseId,
@@ -52,6 +85,9 @@ export function insertExpense(input: InsertExpenseInput): InsertExpenseResult {
     bank_source: input.bankSource,
     raw_sms_text: input.rawSmsText,
     is_split: isSplit ? 1 : 0,
+    split_pending: splitPending,
+    shared_expense_id: sharedExpenseId,
+    sync_status: sharedExpenseId ? 'pending' : 'local',
     occurred_at: input.occurredAt,
     created_at: now,
     updated_at: now,
@@ -61,8 +97,9 @@ export function insertExpense(input: InsertExpenseInput): InsertExpenseResult {
     db.runSync(
       `INSERT INTO expenses
          (id, amount, total_amount, currency, category_id, label, merchant,
-          source, bank_source, raw_sms_text, is_split, occurred_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          source, bank_source, raw_sms_text, is_split, split_pending,
+          shared_expense_id, sync_status, occurred_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       expenseId,
       amount,
       round2(input.totalAmount),
@@ -74,31 +111,48 @@ export function insertExpense(input: InsertExpenseInput): InsertExpenseResult {
       input.bankSource,
       input.rawSmsText,
       isSplit ? 1 : 0,
+      splitPending,
+      sharedExpenseId,
+      sharedExpenseId ? 'pending' : 'local',
       input.occurredAt,
       now,
       now
     );
 
     // Resolve named participants (find-or-create) so the snapshot can carry
-    // their stable person ids alongside the display names.
+    // their stable person ids alongside the display names. Linked accounts get
+    // a remote user id and a pending share status for the sync outbox.
     const participantSnapshot = (input.participants ?? []).map((participant) => {
-      const person = findOrCreatePerson(participant.name);
+      const person =
+        participant.remoteUserId && participant.username
+          ? findOrCreateAccountPerson({
+              remoteUserId: participant.remoteUserId,
+              username: participant.username,
+              displayName: participant.name,
+            })
+          : findOrCreatePerson(participant.name);
       const shareAmount = round2(participant.shareAmount);
+      const linked = Boolean(participant.remoteUserId && participant.username);
       db.runSync(
         `INSERT INTO expense_participants
-           (id, expense_id, person_id, share_amount, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+           (id, expense_id, person_id, participant_user_id, share_amount,
+            share_status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         randomUUID(),
         expenseId,
         person.id,
+        linked ? participant.remoteUserId! : null,
         shareAmount,
+        linked ? 'pending' : 'local',
         now,
         now
       );
       return {
         person_id: person.id,
         display_name: person.display_name,
+        username: person.username,
         share_amount: shareAmount,
+        share_status: linked ? 'pending' : 'local',
       };
     });
 
@@ -115,7 +169,22 @@ export function insertExpense(input: InsertExpenseInput): InsertExpenseResult {
     );
   });
 
-  return { expenseId, amount, isSplit };
+  return {
+    expenseId,
+    amount,
+    isSplit,
+    sharedExpense:
+      sharedExpenseId != null
+        ? {
+            id: sharedExpenseId,
+            totalAmount: round2(input.totalAmount),
+            ownerShare: amount,
+            label: input.label,
+            occurredAt: input.occurredAt,
+            participants: linkedParticipants,
+          }
+        : null,
+  };
 }
 
 export interface ExpenseRow {
@@ -131,6 +200,9 @@ export interface ExpenseRow {
   bank_source: string | null;
   raw_sms_text: string | null;
   is_split: number;
+  split_pending: number;
+  shared_expense_id: string | null;
+  sync_status: string;
   occurred_at: string;
   created_at: string;
   updated_at: string;
@@ -176,6 +248,16 @@ export function getExpense(id: string): ExpenseRow | null {
   return db.getFirstSync<ExpenseRow>(`${EXPENSE_SELECT} WHERE e.id = ?`, id) ?? null;
 }
 
+// All expenses whose split people/shares still need to be filled in. Not
+// range-limited: a pending split must stay visible until it is resolved.
+export function listPendingSplitExpenses(limit = 20): ExpenseRow[] {
+  return db.getAllSync<ExpenseRow>(
+    `${EXPENSE_SELECT} WHERE e.split_pending = 1
+     ORDER BY e.occurred_at DESC, e.created_at DESC LIMIT ?`,
+    limit
+  );
+}
+
 export type UpdateExpenseInput = {
   categoryId: string;
   totalAmount: number;
@@ -183,6 +265,7 @@ export type UpdateExpenseInput = {
   label: string | null;
   merchant: string | null;
   occurredAt: string;
+  splitPending?: boolean;
 };
 
 // Updates the row and appends an activity_log 'edited' snapshot atomically.
@@ -193,6 +276,7 @@ export function updateExpense(id: string, input: UpdateExpenseInput): void {
   const amount = round2(Math.max(0, Math.min(input.selfShare, input.totalAmount)));
   const isSplit = amount < round2(input.totalAmount);
 
+  const splitPending = input.splitPending ? 1 : 0;
   const snapshot = {
     id,
     total_amount: round2(input.totalAmount),
@@ -205,6 +289,7 @@ export function updateExpense(id: string, input: UpdateExpenseInput): void {
     bank_source: existing.bank_source,
     raw_sms_text: existing.raw_sms_text,
     is_split: isSplit ? 1 : 0,
+    split_pending: splitPending,
     occurred_at: input.occurredAt,
     created_at: existing.created_at,
     updated_at: now,
@@ -213,13 +298,14 @@ export function updateExpense(id: string, input: UpdateExpenseInput): void {
   db.withTransactionSync(() => {
     db.runSync(
       `UPDATE expenses SET amount = ?, total_amount = ?, category_id = ?, label = ?,
-         merchant = ?, is_split = ?, occurred_at = ?, updated_at = ? WHERE id = ?`,
+         merchant = ?, is_split = ?, split_pending = ?, occurred_at = ?, updated_at = ? WHERE id = ?`,
       amount,
       round2(input.totalAmount),
       input.categoryId,
       input.label,
       input.merchant,
       isSplit ? 1 : 0,
+      splitPending,
       input.occurredAt,
       now,
       id
@@ -259,6 +345,9 @@ export function deleteExpense(id: string): void {
 export type ParticipantWithBalance = {
   personId: string;
   personName: string;
+  username: string | null;
+  remoteUserId: string | null;
+  shareStatus: string;
   shareAmount: number;
   receivedAmount: number; // sum of settlement_allocations for this expense+person
   remaining: number; // shareAmount - receivedAmount
@@ -271,10 +360,14 @@ export function getExpenseParticipants(expenseId: string): ParticipantWithBalanc
   const rows = db.getAllSync<{
     person_id: string;
     display_name: string;
+    username: string | null;
+    remote_user_id: string | null;
+    share_status: string;
     share_amount: number;
     received_amount: number;
   }>(
-    `SELECT ep.person_id, p.display_name, ep.share_amount,
+    `SELECT ep.person_id, p.display_name, p.username, p.remote_user_id,
+            ep.share_status, ep.share_amount,
             COALESCE(sa.received, 0) AS received_amount
      FROM expense_participants ep
      JOIN people p ON p.id = ep.person_id
@@ -294,6 +387,9 @@ export function getExpenseParticipants(expenseId: string): ParticipantWithBalanc
     return {
       personId: row.person_id,
       personName: row.display_name,
+      username: row.username,
+      remoteUserId: row.remote_user_id,
+      shareStatus: row.share_status,
       shareAmount,
       receivedAmount,
       remaining: round2(shareAmount - receivedAmount),
@@ -307,7 +403,13 @@ export function getExpenseParticipants(expenseId: string): ParticipantWithBalanc
 export function setExpenseSplit(
   expenseId: string,
   selfShare: number,
-  participants: { name: string; shareAmount: number }[]
+  participants: {
+    name: string;
+    shareAmount: number;
+    username?: string | null;
+    remoteUserId?: string | null;
+  }[],
+  splitPending = false
 ): void {
   const existing = getExpense(expenseId);
   if (!existing) return;
@@ -317,9 +419,10 @@ export function setExpenseSplit(
 
   db.withTransactionSync(() => {
     db.runSync(
-      `UPDATE expenses SET amount = ?, is_split = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE expenses SET amount = ?, is_split = ?, split_pending = ?, updated_at = ? WHERE id = ?`,
       amount,
       isSplit ? 1 : 0,
+      splitPending ? 1 : 0,
       now,
       expenseId
     );
@@ -327,15 +430,26 @@ export function setExpenseSplit(
     // so they survive this delete/re-insert and keep counting against the share.
     db.runSync('DELETE FROM expense_participants WHERE expense_id = ?', expenseId);
     for (const participant of participants) {
-      const person = findOrCreatePerson(participant.name);
+      const person =
+        participant.remoteUserId && participant.username
+          ? findOrCreateAccountPerson({
+              remoteUserId: participant.remoteUserId,
+              username: participant.username,
+              displayName: participant.name,
+            })
+          : findOrCreatePerson(participant.name);
+      const linked = Boolean(participant.remoteUserId && participant.username);
       db.runSync(
         `INSERT INTO expense_participants
-           (id, expense_id, person_id, share_amount, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+           (id, expense_id, person_id, participant_user_id, share_amount,
+            share_status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         randomUUID(),
         expenseId,
         person.id,
+        linked ? participant.remoteUserId ?? null : null,
         round2(participant.shareAmount),
+        linked ? 'pending' : 'local',
         now,
         now
       );

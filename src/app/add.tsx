@@ -1,6 +1,6 @@
 import { useRouter } from "expo-router";
-import { useEffect, useRef, useState } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Alert, Pressable, StyleSheet, View } from "react-native";
 
 import { AmountSlide } from "@/components/add-flow/amount-slide";
 import { CategorySlide } from "@/components/add-flow/category-slide";
@@ -16,8 +16,12 @@ import { getMerchantMemory, rememberMerchant } from "@/db/merchant-memory";
 import { AddExpenseIntent } from "@/hooks/useAddExpenseIntent";
 import { useAddExpenseIntentContext } from "@/hooks/add-expense-intent-provider";
 import { useKeyboardHeight } from "@/hooks/use-keyboard";
+import { formatCurrency } from "@/lib/format";
 import { liveActivity } from "@/lib/live-activity";
 import { syncMerchantCategoryMap } from "@/lib/merchant-category-sync";
+import { findSettlementMatches } from "@/lib/settlement-matching";
+import { settleSharedDebt } from "@/lib/shared-debts";
+import { enqueueSharedExpense, flushOutbox } from "@/lib/sync";
 
 const STEP_NAMES = ["Amount", "Category", "Split", "Label", "Preview"] as const;
 const LAST_STEP = STEP_NAMES.length - 1;
@@ -100,6 +104,37 @@ export default function AddScreen() {
   // like a manual open: empty amount, nothing pre-filled.
   const smsIntent = intent?.source === "sms" ? intent : null;
   const isManual = smsIntent == null;
+  const outgoingMatches = useMemo(() => {
+    const parsedAmount = smsIntent?.prefill.amount;
+    if (!parsedAmount) return [];
+    return findSettlementMatches({
+      amount: parsedAmount,
+      direction: "outgoing",
+      counterpartyHint: smsIntent?.prefill.merchant ?? null,
+    }).slice(0, 2);
+  }, [smsIntent]);
+
+  const settleDetectedOutgoing = (match: (typeof outgoingMatches)[number]) => {
+    const parsedAmount = smsIntent?.prefill.amount ?? totalAmount;
+    settleSharedDebt({
+      participantId: match.row.participantId,
+      expenseId: match.row.expenseId,
+      amount: parsedAmount,
+      method: "detected_outgoing",
+    })
+      .then(() => {
+        liveActivity.endAll().catch(() => {});
+        if (smsIntent) liveActivity.removePendingCapture(smsIntent.rawText);
+        clear();
+        router.replace("/");
+      })
+      .catch((err) => {
+        Alert.alert(
+          "Could not settle shared expense",
+          err instanceof Error ? err.message : "Try again."
+        );
+      });
+  };
   const isAmountStep = currentStep === AMOUNT_STEP;
 
   const goNext = () => {
@@ -118,7 +153,7 @@ export default function AddScreen() {
   const saveExpense = (): string | null => {
     if (!canConfirm || !category || !split) return null;
     const trimmedLabel = label.trim() || null;
-    const { expenseId } = insertExpense({
+    const { expenseId, sharedExpense } = insertExpense({
       totalAmount,
       selfShare: split.selfShare,
       categoryId: category.id,
@@ -132,6 +167,10 @@ export default function AddScreen() {
       occurredAt: smsIntent?.prefill.occurredAt ?? new Date().toISOString(),
       participants: split.participants,
     });
+    if (sharedExpense) {
+      enqueueSharedExpense(sharedExpense);
+      flushOutbox().catch(() => {});
+    }
     // Learn the payee -> category mapping so the next SMS from it opens past the
     // Category slide. Only SMS entries carry a merchant, and only confirmed
     // writes should teach anything.
@@ -186,6 +225,25 @@ export default function AddScreen() {
         </Pressable>
       </View>
 
+      {outgoingMatches.length > 0 ? (
+        <View style={styles.sharedMatch}>
+          <ThemedText type="smallBold">Possible shared payment</ThemedText>
+          {outgoingMatches.map((match) => (
+            <View key={match.row.participantId} style={styles.sharedRow}>
+              <ThemedText type="small" style={styles.sharedText}>
+                @{match.row.counterpartyUsername} ·{" "}
+                {match.row.label ?? "Shared expense"} ·{" "}
+                {formatCurrency(match.remaining)}
+                {match.exact ? " · exact match" : " · within ₹1"}
+              </ThemedText>
+              <Pressable onPress={() => settleDetectedOutgoing(match)}>
+                <ThemedText type="linkPrimary">Settle</ThemedText>
+              </Pressable>
+            </View>
+          ))}
+        </View>
+      ) : null}
+
       {isAmountStep ? (
         <AmountSlide value={amount} onChangeAmount={setAmount} autoFocus={isManual} />
       ) : currentStep === 1 ? (
@@ -230,6 +288,23 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingTop: Spacing.six,
     paddingHorizontal: Spacing.four,
+  },
+  sharedMatch: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#3C87F7',
+    backgroundColor: 'rgba(60,135,247,0.12)',
+    borderRadius: 12,
+    padding: Spacing.three,
+    gap: Spacing.two,
+  },
+  sharedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.three,
+  },
+  sharedText: {
+    flex: 1,
   },
   header: {
     flexDirection: "row",
