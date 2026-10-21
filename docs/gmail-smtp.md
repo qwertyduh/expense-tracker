@@ -1,6 +1,6 @@
 # Gmail SMTP for password-reset OTPs
 
-The app already sends a 6-digit recovery OTP (`supabase/templates/recovery.html`).
+The app already sends a one-time recovery OTP (`supabase/templates/recovery.html`).
 Configure Supabase to deliver it through Gmail.
 
 ## 1. Create a Google App Password
@@ -27,7 +27,7 @@ Configure Supabase to deliver it through Gmail.
    ```
    {{ .Token }}
    ```
-   This is what turns the recovery email into a 6-digit OTP instead of only a link.
+   This is what turns the recovery email into a one-time OTP instead of only a link.
 6. Set **Authentication → URL Configuration → Site URL** to your app scheme/site, and add this exact redirect URL:
    ```
    expensetracker://reset-password
@@ -78,6 +78,6 @@ If Gmail SMTP is unreachable on port 465, change `port = 587` in
 1. Open the app → **Forgot password?**
 2. Enter the Gmail address used by the account.
 3. Check the Gmail inbox for “Your Expense Tracker reset code”.
-4. Enter the 6-digit code, set a new password, and sign in.
+4. Enter the one-time code, set a new password, and sign in.
 
 If no email arrives, check Supabase Auth logs and the Gmail “Sent” folder.

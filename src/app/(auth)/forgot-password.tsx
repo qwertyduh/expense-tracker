@@ -38,7 +38,7 @@ export default function ForgotPasswordScreen() {
       );
       if (resetError) throw resetError;
       setStep('reset');
-      setMessage('If that email has an account, a reset link and 6-digit code are on their way.');
+      setMessage('If that email has an account, a reset link and one-time code are on their way.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not send the reset code.');
     } finally {
@@ -49,8 +49,8 @@ export default function ForgotPasswordScreen() {
   const resetPassword = async () => {
     setError(null);
     setMessage(null);
-    if (!/^\d{6}$/.test(otp.trim())) {
-      setError('Enter the 6-digit code from the email.');
+    if (!/^\d{6,8}$/.test(otp.trim())) {
+      setError('Enter the 6-8 digit code from the email.');
       return;
     }
     if (password.length < 6) {
@@ -115,13 +115,13 @@ export default function ForgotPasswordScreen() {
             </>
           ) : (
             <>
-              <ThemedText type="smallBold">6-digit code</ThemedText>
+              <ThemedText type="smallBold">One-time code</ThemedText>
               <TextInput
                 value={otp}
                 onChangeText={(value) => setOtp(value.replace(/\D/g, '').slice(0, 6))}
                 keyboardType="number-pad"
-                maxLength={6}
-                placeholder="123456"
+                maxLength={8}
+                placeholder="12345678"
                 placeholderTextColor={theme.textSecondary}
                 style={[
                   styles.input,
