@@ -185,6 +185,8 @@ CREATE TABLE IF NOT EXISTS sync_outbox (
   entity_id TEXT NOT NULL,
   operation TEXT NOT NULL,
   payload TEXT NOT NULL,
+  user_id TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
   attempts INTEGER NOT NULL DEFAULT 0,
   next_attempt_at TEXT,
   last_error TEXT,
@@ -226,9 +228,55 @@ function migrateAddColumns(): void {
   addColumnIfMissing('expense_participants', 'remote_participant_id', 'TEXT');
   addColumnIfMissing('settlements', 'remote_settlement_id', 'TEXT');
   addColumnIfMissing('settlements', 'sync_status', "TEXT NOT NULL DEFAULT 'local'");
+  addColumnIfMissing('sync_outbox', 'user_id', 'TEXT');
+  addColumnIfMissing('sync_outbox', 'status', "TEXT NOT NULL DEFAULT 'pending'");
   db.execSync(
     'CREATE UNIQUE INDEX IF NOT EXISTS people_remote_user_idx ON people(remote_user_id) WHERE remote_user_id IS NOT NULL'
   );
+  db.execSync(
+    'CREATE INDEX IF NOT EXISTS sync_outbox_due_idx ON sync_outbox(user_id, status, next_attempt_at)'
+  );
+  migrateOutboxOwnership();
+}
+
+// Rows queued before user scoping existed have no owner. Attribute them to the
+// signed-in self profile once (never to whoever happens to sign in later), and
+// quarantine anything still unowned so it is surfaced rather than replayed
+// under the wrong account.
+function migrateOutboxOwnership(): void {
+  const done = db.getFirstSync<{ value: string }>(
+    "SELECT value FROM sync_state WHERE key = 'outbox_user_backfill_done' LIMIT 1"
+  );
+  if (done) return;
+
+  const self = db.getFirstSync<{ remote_user_id: string | null }>(
+    'SELECT remote_user_id FROM people WHERE is_self = 1 LIMIT 1'
+  );
+  const now = new Date().toISOString();
+  db.withTransactionSync(() => {
+    if (self?.remote_user_id) {
+      db.runSync(
+        `UPDATE sync_outbox
+            SET user_id = ?, updated_at = ?
+          WHERE user_id IS NULL`,
+        self.remote_user_id,
+        now
+      );
+    }
+    db.runSync(
+      `UPDATE sync_outbox
+          SET status = 'failed',
+              last_error = COALESCE(last_error, 'missing_user'),
+              updated_at = ?
+        WHERE user_id IS NULL`,
+      now
+    );
+    db.runSync(
+      `INSERT OR REPLACE INTO sync_state (key, value, updated_at)
+       VALUES ('outbox_user_backfill_done', '1', ?)`,
+      now
+    );
+  });
 }
 
 // One-time fold of the legacy upi_aliases table into person_handles. Guarded on

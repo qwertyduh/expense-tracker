@@ -26,6 +26,7 @@ import {
 import { paymentDetection, type DetectionMode } from '@/lib/payment-detection';
 import { syncMerchantCategoryMap } from '@/lib/merchant-category-sync';
 import { useAuth } from '@/hooks/use-auth';
+import { useSyncStatus } from '@/hooks/use-sync-status';
 import { useTheme } from '@/hooks/use-theme';
 
 const MODES: { value: DetectionMode; label: string; hint: string }[] = [
@@ -38,6 +39,12 @@ export default function SettingsScreen() {
   const theme = useTheme();
   const router = useRouter();
   const { profile, signOut } = useAuth();
+  const {
+    pending: pendingSync,
+    failed: failedSync,
+    lastError: syncError,
+    retry: retrySync,
+  } = useSyncStatus();
   const [selfName, setSelfName] = useState('');
   const [memory, setMemory] = useState<MerchantMemoryRow[]>([]);
   const [people, setPeople] = useState<PersonWithHandles[]>([]);
@@ -135,7 +142,12 @@ export default function SettingsScreen() {
   };
 
   const confirmSignOut = () => {
-    Alert.alert('Sign out?', 'Shared expenses will stop syncing until you sign in again.', [
+    const unsynced = pendingSync + failedSync;
+    const message =
+      unsynced > 0
+        ? `${unsynced} change${unsynced === 1 ? '' : 's'} haven't synced yet. They will resume if you sign back in. Shared expenses will stop syncing until then.`
+        : 'Shared expenses will stop syncing until you sign in again.';
+    Alert.alert('Sign out?', message, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Sign out',
@@ -182,6 +194,25 @@ export default function SettingsScreen() {
           onPress={() => router.push('/friends')}
         />
         <Button title="Sign out" variant="ghost" onPress={confirmSignOut} />
+      </Card>
+
+      <Card style={styles.detectionCard}>
+        <ThemedText type="small" themeColor="textSecondary">
+          Sync
+        </ThemedText>
+        <View style={styles.rowBetween}>
+          <ThemedText type="default">
+            {pendingSync} pending · {failedSync} failed
+          </ThemedText>
+          {failedSync > 0 ? (
+            <Button title="Retry" variant="secondary" onPress={retrySync} />
+          ) : null}
+        </View>
+        {syncError ? (
+          <ThemedText type="small" themeColor="danger" numberOfLines={3}>
+            {syncError}
+          </ThemedText>
+        ) : null}
       </Card>
 
       <Card>

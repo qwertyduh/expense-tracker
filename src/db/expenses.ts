@@ -324,11 +324,28 @@ export function updateExpense(id: string, input: UpdateExpenseInput): void {
 
 // Deletes the row and appends an activity_log 'deleted' snapshot (history
 // survives deletion because activity_log has no FK to expenses).
+//
+// Deletion is local-only: a shared expense stays active on the server for the
+// other participants, so no void is enqueued. Cancel any create/update still
+// waiting in the outbox so a deleted row is never pushed; a queued void is left
+// alone because that removal was intentional. Dependent rows are deleted
+// explicitly so the result does not depend on SQLite's foreign_keys pragma.
 export function deleteExpense(id: string): void {
   const existing = getExpense(id);
   if (!existing) return;
   const now = new Date().toISOString();
+  const sharedExpenseId = existing.shared_expense_id ?? id;
   db.withTransactionSync(() => {
+    db.runSync(
+      `DELETE FROM sync_outbox
+        WHERE entity_type = 'shared_expense'
+          AND entity_id IN (?, ?)
+          AND operation IN ('create', 'update')`,
+      id,
+      sharedExpenseId
+    );
+    db.runSync('DELETE FROM settlement_allocations WHERE expense_id = ?', id);
+    db.runSync('DELETE FROM expense_participants WHERE expense_id = ?', id);
     db.runSync('DELETE FROM expenses WHERE id = ?', id);
     db.runSync(
       `INSERT INTO activity_log (id, action, expense_id, expense_snapshot, occurred_at, created_at)

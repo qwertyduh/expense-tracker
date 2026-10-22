@@ -53,3 +53,9 @@ export function listCachedFriends(): CachedFriend[] {
 export function listCachedAcceptedFriends(): CachedFriend[] {
   return listCachedFriends().filter((row) => row.status === 'accepted');
 }
+
+// Account-scoped data: cleared on sign-out so the next account never sees the
+// previous user's friends (including pending requests).
+export function clearFriendCache(): void {
+  db.runSync('DELETE FROM friend_cache');
+}

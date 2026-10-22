@@ -295,17 +295,26 @@ export default function ExpenseDetailScreen() {
   const totalRemaining = participants.reduce((sum, person) => sum + person.remaining, 0);
 
   const remove = () => {
-    Alert.alert('Delete expense?', 'This cannot be undone.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: () => {
-          deleteExpense(expense.id);
-          router.back();
+    const isShared =
+      Boolean(expense.shared_expense_id) ||
+      participants.some((person) => person.remoteUserId != null);
+    Alert.alert(
+      'Delete expense?',
+      isShared
+        ? 'This removes it from your history only. It stays in your friends\u2019 shared records.'
+        : 'This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            deleteExpense(expense.id);
+            router.back();
+          },
         },
-      },
-    ]);
+      ]
+    );
   };
 
   const inputStyle = [

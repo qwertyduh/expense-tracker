@@ -5,7 +5,6 @@ import { AppState } from 'react-native';
 import {
   listPairBalances,
   listSharedDebtRows,
-  updateCachedShare,
   type PairBalance,
   type SharedDebtRow,
 } from '@/db/shared-debts';
@@ -67,22 +66,19 @@ export function useSharedDebts() {
 
   const settle = useCallback(
     async (row: SharedDebtRow, amount: number, method: SettlementMethod = 'manual') => {
-      if (method === 'manual') {
-        updateCachedShare(row.participantId, 'paid', row.shareAmount);
-        setBalances(listPairBalances());
+      const outcome = await settleSharedDebt({
+        participantId: row.participantId,
+        expenseId: row.expenseId,
+        amount,
+        method,
+      });
+      // The server is the source of truth for settled_amount/status; never
+      // optimistically mark the full share paid for a partial payment.
+      await refresh();
+      if (outcome.state === 'failed') {
+        throw new Error(outcome.error ?? 'Could not settle this share.');
       }
-      try {
-        await settleSharedDebt({
-          participantId: row.participantId,
-          expenseId: row.expenseId,
-          amount,
-          method,
-        });
-        await refresh();
-      } catch (err) {
-        await refresh();
-        throw err;
-      }
+      return outcome;
     },
     [refresh]
   );

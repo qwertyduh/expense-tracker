@@ -1,11 +1,13 @@
 import type { Session } from '@supabase/supabase-js';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
+import { clearFriendCache } from '@/db/friends';
 import { linkSelfToProfile } from '@/db/people';
+import { clearSharedDebtCache } from '@/db/shared-debts';
 import { loadFriends } from '@/lib/friends';
 import { registerForPushNotifications } from '@/lib/push';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
-import { flushOutbox } from '@/lib/sync';
+import { clearActiveUserId, flushOutbox, setActiveUserId } from '@/lib/sync';
 
 export type Profile = {
   id: string;
@@ -63,12 +65,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const applyProfile = useCallback(async (userId: string | null) => {
     if (!userId) {
+      clearActiveUserId();
       setProfile(null);
       return;
     }
     const next = await fetchProfile(userId).catch(() => null);
     setProfile(next);
     if (next) {
+      // Set before anything enqueues or flushes: every outbox row is scoped to
+      // this id and must never be sent under a different account.
+      setActiveUserId(next.id);
       linkSelfToProfile({
         remoteUserId: next.id,
         username: next.username,
@@ -133,10 +139,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
+    const userId = session?.user.id ?? null;
+
+    // Best-effort: stop this device receiving the old account's notifications.
+    // A network failure must not block signing out.
+    if (userId) {
+      try {
+        await supabase.from('devices').delete().eq('user_id', userId);
+      } catch {
+        // Ignore; the next sign-in re-registers the token.
+      }
+    }
+
+    // Account-scoped caches and the outbox owner go first, so nothing from this
+    // account can flush or render under the next one. Outbox rows themselves
+    // are kept, scoped to userId, and resume if this account signs back in.
+    clearFriendCache();
+    clearSharedDebtCache();
+    clearActiveUserId();
+
     const { error } = await supabase.auth.signOut();
-    if (error) throw error;
+    if (error) {
+      // Still signed in: restore ownership so sync keeps working.
+      if (userId) setActiveUserId(userId);
+      throw error;
+    }
     setProfile(null);
-  }, []);
+  }, [session?.user.id]);
 
   const refreshProfile = useCallback(async () => {
     const userId = session?.user.id;

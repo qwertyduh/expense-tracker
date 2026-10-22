@@ -79,6 +79,12 @@ export function replaceSharedDebtCache(rows: SharedDebtRow[]): void {
   });
 }
 
+// Account-scoped data: cleared on sign-out so debts are never shown to the
+// next account on the device.
+export function clearSharedDebtCache(): void {
+  db.runSync('DELETE FROM shared_debt_cache');
+}
+
 export function listSharedDebtRows(): SharedDebtRow[] {
   return db
     .getAllSync<DbRow>(

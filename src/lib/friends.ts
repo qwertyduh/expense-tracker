@@ -69,8 +69,15 @@ export async function loadFriends(): Promise<FriendsSnapshot> {
     ...new Set(links.flatMap((row) => [row.requester_id, row.addressee_id])),
   ].filter((id) => id !== userId);
 
+  // Account switched while this load was in flight: never publish (or wipe)
+  // the cache using the previous account's result.
+  const stillSameUser = async () => {
+    const current = await supabase.auth.getSession();
+    return current.data.session?.user.id === userId;
+  };
+
   if (profileIds.length === 0) {
-    replaceFriendCache([]);
+    if (await stillSameUser()) replaceFriendCache([]);
     return { friends: [], incoming: [], outgoing: [] };
   }
 
@@ -79,6 +86,10 @@ export async function loadFriends(): Promise<FriendsSnapshot> {
     .select('id, username, display_name')
     .in('id', profileIds);
   if (profileError) throw profileError;
+
+  if (!(await stillSameUser())) {
+    return { friends: [], incoming: [], outgoing: [] };
+  }
 
   const profilesById = new Map(
     ((profiles ?? []) as FriendProfile[]).map((profile) => [profile.id, profile])

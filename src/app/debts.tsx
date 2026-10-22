@@ -50,6 +50,14 @@ export default function DebtsScreen() {
           onPress: () => {
             setBusyId(row.participantId);
             settle(row, amount)
+              .then((outcome) => {
+                if (outcome.state === 'pending') {
+                  Alert.alert(
+                    'Saved',
+                    'The payment will be recorded when you are back online.'
+                  );
+                }
+              })
               .catch((err) =>
                 Alert.alert(
                   'Could not settle',

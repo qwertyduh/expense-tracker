@@ -81,6 +81,8 @@ class ExpenseDb(context: Context) {
                   entity_id TEXT NOT NULL,
                   operation TEXT NOT NULL,
                   payload TEXT NOT NULL,
+                  user_id TEXT,
+                  status TEXT NOT NULL DEFAULT 'pending',
                   attempts INTEGER NOT NULL DEFAULT 0,
                   next_attempt_at TEXT,
                   last_error TEXT,
@@ -89,8 +91,25 @@ class ExpenseDb(context: Context) {
                 )
                 """.trimIndent()
             )
+            // Keep these in sync with src/db/schema.ts migrateAddColumns().
+            ensureColumn(db, "sync_outbox", "user_id", "TEXT")
+            ensureColumn(db, "sync_outbox", "status", "TEXT NOT NULL DEFAULT 'pending'")
         }
     }
+
+    /**
+     * Outbox rows are owned by the signed-in account. JS writes this key on
+     * sign-in and clears it on sign-out; a missing value means "no owner".
+     */
+    private fun activeUserId(db: SQLiteDatabase): String? =
+        runCatching {
+            db.rawQuery(
+                "SELECT value FROM sync_state WHERE key = 'active_user_id' LIMIT 1",
+                null
+            ).use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            }
+        }.getOrNull()
 
     private fun ensureColumn(db: SQLiteDatabase, table: String, column: String, definition: String) {
         db.rawQuery("PRAGMA table_info($table)", null).use { cursor ->
@@ -375,14 +394,24 @@ class ExpenseDb(context: Context) {
                                 }
                             })
                         }
+                        val userId = activeUserId(db)
                         db.execSQL(
                             """
                             INSERT OR REPLACE INTO sync_outbox
-                              (id, entity_type, entity_id, operation, payload, attempts,
-                               next_attempt_at, last_error, created_at, updated_at)
-                            VALUES (?, 'shared_expense', ?, 'create', ?, 0, NULL, NULL, ?, ?)
+                              (id, entity_type, entity_id, operation, payload, user_id,
+                               status, attempts, next_attempt_at, last_error, created_at, updated_at)
+                            VALUES (?, 'shared_expense', ?, 'create', ?, ?, ?, 0, NULL, ?, ?, ?)
                             """.trimIndent(),
-                            arrayOf(UUID.randomUUID().toString(), expenseId, payload.toString(), now, now)
+                            arrayOf(
+                                "shared_expense:$expenseId:create",
+                                expenseId,
+                                payload.toString(),
+                                userId,
+                                if (userId != null) "pending" else "failed",
+                                if (userId != null) null else "missing_user",
+                                now,
+                                now
+                            )
                         )
                     }
 
@@ -438,11 +467,35 @@ class ExpenseDb(context: Context) {
         return id
     }
 
+    /**
+     * Local-only delete: the shared copy stays active on the server for the
+     * other participants. Cancel queued create/update rows so a deleted
+     * expense is never pushed, but keep any queued void. Dependent rows are
+     * deleted explicitly because this connection does not enable foreign keys.
+     */
     fun deleteExpense(expenseId: String) {
         if (!exists()) return
         open().use { db ->
             db.beginTransaction()
             try {
+                val sharedExpenseId = db.rawQuery(
+                    "SELECT shared_expense_id FROM expenses WHERE id = ?",
+                    arrayOf(expenseId)
+                ).use { cursor ->
+                    if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getString(0) else expenseId
+                }
+                db.execSQL(
+                    "DELETE FROM sync_outbox WHERE entity_type = 'shared_expense' AND entity_id IN (?, ?) AND operation IN ('create', 'update')",
+                    arrayOf(expenseId, sharedExpenseId)
+                )
+                db.execSQL(
+                    "DELETE FROM settlement_allocations WHERE expense_id = ?",
+                    arrayOf(expenseId)
+                )
+                db.execSQL(
+                    "DELETE FROM expense_participants WHERE expense_id = ?",
+                    arrayOf(expenseId)
+                )
                 db.execSQL("DELETE FROM expenses WHERE id = ?", arrayOf(expenseId))
                 db.execSQL(
                     "INSERT INTO activity_log (id, action, expense_id, expense_snapshot, occurred_at, created_at) VALUES (?, 'deleted', ?, '{}', ?, ?)",

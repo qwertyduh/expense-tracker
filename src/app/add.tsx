@@ -122,7 +122,20 @@ export default function AddScreen() {
       amount: parsedAmount,
       method: "detected_outgoing",
     })
-      .then(() => {
+      .then((outcome) => {
+        if (outcome.state === "failed") {
+          Alert.alert(
+            "Could not settle shared expense",
+            outcome.error ?? "Try again."
+          );
+          return;
+        }
+        if (outcome.state === "pending") {
+          Alert.alert(
+            "Saved",
+            "The payment will be recorded when you are back online."
+          );
+        }
         liveActivity.endAll().catch(() => {});
         if (smsIntent) liveActivity.removePendingCapture(smsIntent.rawText);
         clear();

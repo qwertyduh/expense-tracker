@@ -1,10 +1,15 @@
-import { randomUUID } from 'expo-crypto';
-
 import {
   replaceSharedDebtCache,
   type SharedDebtRow,
 } from '@/db/shared-debts';
 import { db } from '@/db/schema';
+import {
+  enqueueSettlement,
+  flushOutbox,
+  getSettlementState,
+  type SettlementMethod,
+  type SettlementState,
+} from '@/lib/sync';
 import { supabase } from '@/lib/supabase';
 
 type RemoteParticipant = {
@@ -32,7 +37,8 @@ type ProfileRow = {
   display_name: string;
 };
 
-export type SettlementMethod = 'manual' | 'detected_incoming' | 'detected_outgoing';
+export type { SettlementMethod };
+export type SettleOutcome = SettlementState;
 
 export async function pullSharedDebts(): Promise<SharedDebtRow[]> {
   const { data: auth, error: authError } = await supabase.auth.getUser();
@@ -74,6 +80,11 @@ export async function pullSharedDebts(): Promise<SharedDebtRow[]> {
       ((profileRows ?? []) as ProfileRow[]).map((profile) => [profile.id, profile])
     );
   }
+
+  // Account switched while this pull was in flight: never write another
+  // user's debts into the cache.
+  const current = await supabase.auth.getSession();
+  if (current.data.session?.user.id !== me) return [];
 
   const rows: SharedDebtRow[] = [];
   const syncedExpenseIds: string[] = [];
@@ -140,29 +151,18 @@ export async function pullSharedDebts(): Promise<SharedDebtRow[]> {
   return rows;
 }
 
+// Enqueue first, then flush. The intent and its idempotency key are durable, so
+// a lost response, an app kill, or a later retry reuses the same key and the
+// server returns the original settlement instead of crediting the share twice.
 export async function settleSharedDebt(input: {
   participantId: string;
   expenseId: string;
   amount: number;
   method: SettlementMethod;
-}): Promise<void> {
-  const idempotencyKey = `${input.participantId}:${Date.now()}:${randomUUID()}`;
-  const { error } = await supabase.rpc('settle_share', {
-    p_participant_id: input.participantId,
-    p_amount: input.amount,
-    p_method: input.method,
-    p_idempotency_key: idempotencyKey,
-  });
-  if (error) throw error;
-  supabase.functions
-    .invoke('notify-debt', {
-      body: {
-        expenseId: input.expenseId,
-        participantId: input.participantId,
-        kind: 'settled',
-      },
-    })
-    .catch(() => {});
+}): Promise<SettleOutcome> {
+  const { intentId } = enqueueSettlement(input);
+  await flushOutbox().catch(() => {});
+  return getSettlementState(intentId);
 }
 
 export function subscribeToSharedDebts(onChange: () => void) {

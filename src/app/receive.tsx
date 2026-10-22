@@ -13,7 +13,6 @@ import {
 } from '@/db/incoming-receipts';
 import { insertSettlement, listOutstandingShares, OutstandingShare } from '@/db/settlements';
 import { getPersonByHandle, rememberHandle } from '@/db/person-handles';
-import { updateCachedShare } from '@/db/shared-debts';
 import { getUpiAlias, rememberUpiAlias } from '@/db/upi-aliases';
 import { useKeyboardHeight } from '@/hooks/use-keyboard';
 import { ReceiveIntent, useReceiveIntent } from '@/hooks/receive-intent';
@@ -305,20 +304,28 @@ export default function ReceiveScreen() {
     timer.current = setTimeout(goHome, SAVED_DELAY_MS);
   };
 
-  const settleDetectedShared = (
-    participantId: string,
-    shareAmount: number,
-    sharedExpenseId: string
-  ) => {
+  const settleDetectedShared = (participantId: string, sharedExpenseId: string) => {
     settleSharedDebt({
       participantId,
       expenseId: sharedExpenseId,
       amount: amountNum,
       method: 'detected_incoming',
     })
-      .then(() => {
-        updateCachedShare(participantId, 'paid', shareAmount);
+      .then((outcome) => {
+        if (outcome.state === 'failed') {
+          Alert.alert(
+            'Could not settle shared debt',
+            outcome.error ?? 'Try again.'
+          );
+          return;
+        }
         if (receiptId) markIncomingReceipt(receiptId, 'linked');
+        if (outcome.state === 'pending') {
+          Alert.alert(
+            'Saved',
+            'The payment will be recorded when you are back online.'
+          );
+        }
         setSaved(true);
         timer.current = setTimeout(goHome, SAVED_DELAY_MS);
       })
@@ -416,11 +423,7 @@ export default function ReceiveScreen() {
               </ThemedText>
               <Pressable
                 onPress={() =>
-                  settleDetectedShared(
-                    match.row.participantId,
-                    match.row.shareAmount,
-                    match.row.expenseId
-                  )
+                  settleDetectedShared(match.row.participantId, match.row.expenseId)
                 }>
                 <ThemedText type="linkPrimary">Settle</ThemedText>
               </Pressable>

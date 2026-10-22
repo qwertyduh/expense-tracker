@@ -21,6 +21,7 @@ import { countPendingIncomingReceipts } from '@/db/incoming-receipts';
 import { receivedTotalSince, totalOutstanding } from '@/db/settlements';
 import { useAddExpenseIntentContext } from '@/hooks/add-expense-intent-provider';
 import { useSharedDebts } from '@/hooks/use-shared-debts';
+import { useSyncStatus } from '@/hooks/use-sync-status';
 import { useTheme } from '@/hooks/use-theme';
 import {
   EXPENSE_PRESETS,
@@ -69,6 +70,7 @@ export default function HomeScreen() {
   const [outstanding, setOutstanding] = useState(0);
   const [pendingReceipts, setPendingReceipts] = useState(0);
   const { balances: sharedBalances } = useSharedDebts();
+  const { failed: failedSync, lastError: syncError } = useSyncStatus();
 
   // Drives the inline picker's close/open so moving from the start date to the
   // end date is visible rather than an instant, silent swap.
@@ -209,6 +211,26 @@ export default function HomeScreen() {
     <View style={styles.container}>
       <Screen>
         <ScreenHeader title="Expenses" subtitle={`${rangeSubtitle} · your share`} />
+
+        {failedSync > 0 ? (
+          <Pressable onPress={() => router.push('/settings')} style={styles.pressed}>
+            <Card>
+              <View style={styles.syncBanner}>
+                <View style={styles.syncMain}>
+                  <ThemedText type="smallBold" style={{ color: theme.danger }}>
+                    {failedSync} change{failedSync === 1 ? '' : 's'} couldn&apos;t sync
+                  </ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary" numberOfLines={2}>
+                    {syncError ?? 'Tap to review and retry.'}
+                  </ThemedText>
+                </View>
+                <ThemedText type="smallBold" style={{ color: theme.danger }}>
+                  Review ›
+                </ThemedText>
+              </View>
+            </Card>
+          </Pressable>
+        ) : null}
 
         {pendingSplits.length > 0 ? (
           <Card style={styles.pendingCard}>
@@ -536,6 +558,16 @@ const styles = StyleSheet.create({
   },
   pendingCard: {
     gap: Spacing.one,
+  },
+  syncBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.three,
+  },
+  syncMain: {
+    flexShrink: 1,
+    gap: Spacing.half,
   },
   pendingRow: {
     flexDirection: 'row',
