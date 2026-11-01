@@ -1,3 +1,4 @@
+import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
@@ -5,6 +6,7 @@ import { ThemedText } from '@/components/themed-text';
 import { Notice } from '@/components/ui/notice';
 import { Fonts, Spacing } from '@/constants/theme';
 import { listCachedAcceptedFriends, type CachedFriend } from '@/db/friends';
+import { useAuth } from '@/hooks/use-auth';
 import { useNotice } from '@/hooks/use-notice';
 import { useTheme } from '@/hooks/use-theme';
 import { loadFriends } from '@/lib/friends';
@@ -71,6 +73,8 @@ function resizeOthers(others: OtherParticipant[], size: number): OtherParticipan
 
 export function SplitSlide({ totalAmount, onChange }: SplitSlideProps) {
   const theme = useTheme();
+  const router = useRouter();
+  const { session, configured } = useAuth();
   const { notice, showNotice } = useNotice();
   const [count, setCount] = useState(1);
   // Raw "your share" text so "12." mid-edit stays representable. For count 1
@@ -84,6 +88,7 @@ export function SplitSlide({ totalAmount, onChange }: SplitSlideProps) {
   // Refresh the cached friend list in the background; the cache makes the
   // picker usable offline too.
   useEffect(() => {
+    if (!session) return;
     let active = true;
     loadFriends()
       .then(() => {
@@ -93,7 +98,7 @@ export function SplitSlide({ totalAmount, onChange }: SplitSlideProps) {
     return () => {
       active = false;
     };
-  }, []);
+  }, [session]);
 
   const report = (nextCount: number, rawShare: string, nextOthers: OtherParticipant[]) => {
     const selfShare = round2(
@@ -380,7 +385,24 @@ export function SplitSlide({ totalAmount, onChange }: SplitSlideProps) {
               Linked friends see this as a shared expense. Leave it unlinked to
               keep the participant local-only.
             </ThemedText>
-            {friends.length === 0 ? (
+            {!session ? (
+              <>
+                <ThemedText type="small" themeColor="textSecondary">
+                  {configured
+                    ? 'Sign in to add friends and share this expense. Without an account, keep the participant local-only.'
+                    : 'Accounts are not configured in this build.'}
+                </ThemedText>
+                {configured ? (
+                  <Pressable
+                    onPress={() => {
+                      setFriendPicker(null);
+                      router.push('/sign-in');
+                    }}>
+                    <ThemedText type="smallBold">Sign in</ThemedText>
+                  </Pressable>
+                ) : null}
+              </>
+            ) : friends.length === 0 ? (
               <ThemedText type="small" themeColor="textSecondary">
                 No friends yet. Add one from Settings → Friends.
               </ThemedText>

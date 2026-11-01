@@ -1,6 +1,6 @@
 import { Link, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { StyleSheet, TextInput, View } from 'react-native';
+import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { Button } from '@/components/ui/button';
@@ -118,6 +118,13 @@ export default function SignUpScreen() {
         contentStyle={styles.content}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag">
+        <Pressable
+          onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))}
+          hitSlop={12}>
+          <ThemedText type="small" themeColor="textSecondary">
+            ‹ Not now
+          </ThemedText>
+        </Pressable>
         <ScreenHeader
           title="Create account"
           subtitle="Usernames are lowercase letters and numbers only."

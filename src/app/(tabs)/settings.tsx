@@ -38,7 +38,7 @@ const MODES: { value: DetectionMode; label: string; hint: string }[] = [
 export default function SettingsScreen() {
   const theme = useTheme();
   const router = useRouter();
-  const { profile, signOut } = useAuth();
+  const { configured, session, profile, signOut } = useAuth();
   const {
     pending: pendingSync,
     failed: failedSync,
@@ -186,14 +186,29 @@ export default function SettingsScreen() {
         </ThemedText>
         <ThemedText type="subtitle">{profile?.display_name ?? selfName}</ThemedText>
         <ThemedText type="small" themeColor="textSecondary">
-          @{profile?.username ?? 'not signed in'}
+          {session
+            ? `@${profile?.username ?? '…'}`
+            : 'Local only. Sign in to add friends and split expenses.'}
         </ThemedText>
-        <Button
-          title="Friends"
-          variant="secondary"
-          onPress={() => router.push('/friends')}
-        />
-        <Button title="Sign out" variant="ghost" onPress={confirmSignOut} />
+        {session ? (
+          <>
+            <Button
+              title="Friends"
+              variant="secondary"
+              onPress={() => router.push('/friends')}
+            />
+            <Button title="Sign out" variant="ghost" onPress={confirmSignOut} />
+          </>
+        ) : configured ? (
+          <>
+            <Button title="Sign in" onPress={() => router.push('/sign-in')} />
+            <Button
+              title="Create account"
+              variant="secondary"
+              onPress={() => router.push('/sign-up')}
+            />
+          </>
+        ) : null}
       </Card>
 
       <Card style={styles.detectionCard}>

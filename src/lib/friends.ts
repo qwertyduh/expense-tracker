@@ -20,11 +20,20 @@ export type FriendsSnapshot = {
   outgoing: CachedFriend[];
 };
 
+// The RPCs raise short codes (rate_limited, user_not_found, ...); turn the one
+// users can plausibly hit into a sentence instead of showing the raw code.
+function friendlyRpcError(error: { message?: string }): Error {
+  if (/rate_limited/.test(error.message ?? '')) {
+    return new Error('Too many attempts. Please wait a bit and try again.');
+  }
+  return error instanceof Error ? error : new Error(error.message ?? 'Request failed');
+}
+
 export async function searchUser(username: string): Promise<FriendProfile | null> {
   const { data, error } = await supabase.rpc('lookup_user', {
     p_username: username.trim().toLowerCase(),
   });
-  if (error) throw error;
+  if (error) throw friendlyRpcError(error);
   const rows = (data ?? []) as FriendProfile[];
   return rows[0] ?? null;
 }
@@ -33,7 +42,7 @@ export async function sendFriendRequest(username: string): Promise<void> {
   const { error } = await supabase.rpc('send_friend_request', {
     p_username: username.trim().toLowerCase(),
   });
-  if (error) throw error;
+  if (error) throw friendlyRpcError(error);
 }
 
 export async function respondFriendRequest(

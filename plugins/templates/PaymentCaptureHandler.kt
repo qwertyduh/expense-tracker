@@ -92,11 +92,14 @@ class PaymentCaptureHandler(context: Context) {
     private fun autoSave(total: Double, payee: String, rawText: String, memory: ExpenseDb.MerchantMemory) {
         val splitCount = memory.splitCount.coerceAtLeast(1)
         // A remembered split count has no friend mapping, so it is a pending
-        // split until the user assigns people in the app.
+        // split until the user assigns people in the app. Book only this user's
+        // share (total / count) so spent totals are not inflated meanwhile; the
+        // pending flag, not the amount, carries the "assign people" state.
         val splitPending = splitCount > 1
+        val share = if (splitPending) round2(total / splitCount) else total
         val id = db.insertExpense(
             ExpenseDb.NewExpense(
-                total, total, memory.categoryId, null, payee, sanitize(rawText),
+                total, share, memory.categoryId, null, payee, sanitize(rawText),
                 splitPending = splitPending
             )
         )
@@ -107,7 +110,7 @@ class PaymentCaptureHandler(context: Context) {
         db.touchCategory(memory.categoryId)
 
         val categoryName = db.categoryById(memory.categoryId)?.name ?: "Saved"
-        showSaved(id, total, categoryName, if (splitPending) 1 else splitCount, payee, rawText)
+        showSaved(id, total, categoryName, splitCount, payee, rawText)
     }
 
     /** Shared "saved" confirmation shown after every write, with Undo / Change. */
@@ -145,7 +148,10 @@ class PaymentCaptureHandler(context: Context) {
             context,
             windowManager,
             categories,
-            db.topFriends(5),
+            runCatching { db.topFriends(5) }.getOrElse {
+                Log.e(TAG, "topFriends failed", it)
+                emptyList()
+            },
             amount,
             payee,
             object : PaymentOverlayController.Listener {
@@ -192,12 +198,26 @@ class PaymentCaptureHandler(context: Context) {
                             splitPending = splitPending,
                             participants = participants
                         )
-                    ) ?: return
+                    )
+                    if (id == null) {
+                        // Never drop a payment silently after the user picked
+                        // a category: show the card again with their input.
+                        Log.e(TAG, "insertExpense failed after selection; reopening overlay")
+                        toast("Couldn't save, try again")
+                        showOverlay(amount, payee, rawText)
+                        return
+                    }
                     db.touchCategory(category.id)
                     // Only learn when auto-filing is on; "always ask" must never
                     // start pre-filling later choices.
                     if (payee != null && PaymentPrefs.mode(appContext) != PaymentPrefs.MODE_ASK) {
-                        val learnedCount = if (equalSplit) friends.size + 1 else 1
+                        // "Other"/unequal says nothing about the split size, so
+                        // keep what was learned before instead of resetting it.
+                        val learnedCount: Int? = when {
+                            equalSplit -> friends.size + 1
+                            split != null -> null
+                            else -> 1
+                        }
                         db.rememberMerchant(payee, category.id, learnedCount)
                     }
                     showSaved(

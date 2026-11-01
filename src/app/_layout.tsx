@@ -41,8 +41,9 @@ function AppIntentListener() {
   return null;
 }
 
-// Mandatory account gate. Supabase restores a cached session from SecureStore,
-// so signing in once is enough for normal offline use afterwards.
+// Accounts are optional: the app is fully usable offline without one. Only
+// friends and shared expenses need an account, and those screens ask for it
+// themselves. This gate just keeps a signed-in user out of the auth screens.
 function AuthGate() {
   const { loading, session } = useAuth();
   const segments = useSegments();
@@ -83,9 +84,7 @@ function AuthGate() {
     const inAuthGroup = segments[0] === '(auth)';
     const inResetFlow =
       segments[0] === 'reset-password' || segments[0] === 'auth-callback';
-    if (!session && !inAuthGroup && !inResetFlow) {
-      router.replace('/sign-in');
-    } else if (session && inAuthGroup) {
+    if (session && inAuthGroup && !inResetFlow) {
       router.replace('/');
     }
   }, [loading, resetLink, rootNavigationState?.key, router, segments, session]);

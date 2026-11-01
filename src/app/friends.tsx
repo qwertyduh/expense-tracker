@@ -17,9 +17,10 @@ import {
   sendFriendRequest,
   type FriendProfile,
 } from '@/lib/friends';
+import { useAuth } from '@/hooks/use-auth';
 import { useTheme } from '@/hooks/use-theme';
 
-export default function FriendsScreen() {
+function FriendsContent() {
   const theme = useTheme();
   const router = useRouter();
   const [friends, setFriends] = useState<CachedFriend[]>([]);
@@ -294,3 +295,41 @@ const styles = StyleSheet.create({
     gap: Spacing.two,
   },
 });
+
+export default function FriendsScreen() {
+  const { configured, loading, session } = useAuth();
+  const router = useRouter();
+
+  if (loading) return <Screen><View /></Screen>;
+  if (session) return <FriendsContent />;
+
+  // Accounts are optional, but friends are accounts: ask here, not at launch.
+  return (
+    <Screen>
+      <Pressable onPress={() => router.back()} hitSlop={12}>
+        <ThemedText type="small" themeColor="textSecondary">
+          ‹ Back
+        </ThemedText>
+      </Pressable>
+      <ScreenHeader title="Friends" subtitle="Split expenses with people who use the app." />
+      <Card style={{ gap: Spacing.three }}>
+        <ThemedText type="smallBold">Sign in to add friends</ThemedText>
+        <ThemedText type="small" themeColor="textSecondary">
+          {configured
+            ? 'Friends and shared expenses need an account. Everything else keeps working without one, and your existing expenses stay on this device.'
+            : 'Accounts are not configured in this build.'}
+        </ThemedText>
+        {configured ? (
+          <>
+            <Button title="Sign in" onPress={() => router.push('/sign-in')} />
+            <Button
+              title="Create account"
+              variant="secondary"
+              onPress={() => router.push('/sign-up')}
+            />
+          </>
+        ) : null}
+      </Card>
+    </Screen>
+  );
+}

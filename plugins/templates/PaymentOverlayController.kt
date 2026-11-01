@@ -359,6 +359,9 @@ class PaymentOverlayController(
             selectedFriends.remove(friend.userId)
         } else {
             selectedFriends.add(friend.userId)
+            // Picking a friend means "split with them"; leaving the switch on
+            // "unequal" silently threw the selection away.
+            if (selectedFriends.size == 1) equalSwitch?.isChecked = true
         }
         val selected = selectedFriends.contains(friend.userId)
         friendViews[friend.userId]?.background = rounded(

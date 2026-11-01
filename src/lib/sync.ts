@@ -144,6 +144,12 @@ export function enqueueSharedExpense(draft: SharedExpenseDraft): void {
   });
 }
 
+// Drop a queued (pending or failed) operation, e.g. a void that the user undid
+// by adding a friend back before it was sent.
+export function cancelOutbox(entityType: string, entityId: string, operation: string): void {
+  db.runSync('DELETE FROM sync_outbox WHERE id = ?', outboxRowId(entityType, entityId, operation));
+}
+
 export type SettlementMethod = 'manual' | 'detected_incoming' | 'detected_outgoing';
 
 export type SettlementPayload = {
@@ -277,9 +283,14 @@ async function flushOnce(): Promise<'continue' | 'stop'> {
         markExpenseSyncStatus(row.entity_id, 'synced');
         removeRow(row.id);
       } else if (row.entity_type === 'shared_expense' && row.operation === 'update') {
-        const { error } = await supabase.rpc('update_shared_expense', {
-          p_payload: JSON.parse(row.payload),
-        });
+        const payload = JSON.parse(row.payload);
+        let { error } = await supabase.rpc('update_shared_expense', { p_payload: payload });
+        if (error && /expense_not_found|expense_not_active/.test(syncErrorMessage(error))) {
+          // The create never reached the server (it failed or was cancelled), or
+          // an in-flight void landed first. create is idempotent and revives a
+          // voided expense of the same owner.
+          ({ error } = await supabase.rpc('create_shared_expense', { p_payload: payload }));
+        }
         if (error) throw error;
         markExpenseSyncStatus(row.entity_id, 'synced');
         removeRow(row.id);
@@ -288,6 +299,23 @@ async function flushOnce(): Promise<'continue' | 'stop'> {
           p_expense_id: row.entity_id,
         });
         if (error) throw error;
+        // Only now does the local row stop being shared; clearing earlier left
+        // it believing it was local while the server still charged friends.
+        const reshared = db.getFirstSync<{ id: string }>(
+          `SELECT id FROM sync_outbox
+            WHERE entity_type = 'shared_expense' AND entity_id = ?
+              AND operation IN ('create', 'update') LIMIT 1`,
+          row.entity_id
+        );
+        if (!reshared) {
+          db.runSync(
+            `UPDATE expenses
+                SET shared_expense_id = NULL, sync_status = 'local', updated_at = ?
+              WHERE shared_expense_id = ?`,
+            nowIso(),
+            row.entity_id
+          );
+        }
         removeRow(row.id);
       } else if (row.entity_type === 'shared_settlement' && row.operation === 'settle') {
         const payload = JSON.parse(row.payload) as SettlementPayload;

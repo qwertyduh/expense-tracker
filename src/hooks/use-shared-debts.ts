@@ -1,5 +1,5 @@
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 
 import {
@@ -23,26 +23,47 @@ export function useSharedDebts() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Overlapping pulls (focus + app-state + realtime) each rewrite the whole
+  // cache; run them one at a time and coalesce requests made meanwhile into a
+  // single follow-up, so an older response can never overwrite a newer one.
+  const inFlight = useRef<Promise<void> | null>(null);
+  const queued = useRef(false);
+
+  const reload = useCallback(() => {
+    setBalances(listPairBalances());
+    setRows(listSharedDebtRows());
+  }, []);
+
   const refresh = useCallback(async () => {
     if (!configured || !session) {
-      setBalances(listPairBalances());
-      setRows(listSharedDebtRows());
+      reload();
       return;
     }
-    setLoading(true);
-    setError(null);
-    try {
-      await pullSharedDebts();
-      setBalances(listPairBalances());
-      setRows(listSharedDebtRows());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not sync shared debts.');
-      setBalances(listPairBalances());
-      setRows(listSharedDebtRows());
-    } finally {
-      setLoading(false);
+    if (inFlight.current) {
+      queued.current = true;
+      return inFlight.current;
     }
-  }, [configured, session]);
+    const run = (async () => {
+      setLoading(true);
+      try {
+        do {
+          queued.current = false;
+          setError(null);
+          try {
+            await pullSharedDebts();
+          } catch (err) {
+            setError(err instanceof Error ? err.message : 'Could not sync shared debts.');
+          }
+          reload();
+        } while (queued.current);
+      } finally {
+        setLoading(false);
+        inFlight.current = null;
+      }
+    })();
+    inFlight.current = run;
+    return run;
+  }, [configured, reload, session]);
 
   useFocusEffect(
     useCallback(() => {
@@ -52,13 +73,21 @@ export function useSharedDebts() {
 
   useEffect(() => {
     if (!configured || !session) return;
+    // A burst of participant/expense changes arrives as many events; one pull
+    // after the burst settles is enough.
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const unsubscribe = subscribeToSharedDebts(() => {
-      refresh();
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        refresh();
+      }, 500);
     });
     const appState = AppState.addEventListener('change', (state) => {
       if (state === 'active') refresh();
     });
     return () => {
+      if (timer) clearTimeout(timer);
       unsubscribe();
       appState.remove();
     };

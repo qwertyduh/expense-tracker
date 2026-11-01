@@ -176,23 +176,24 @@ export default function ExpenseDetailScreen() {
   };
 
   const toggleFriend = (friend: CachedFriend) => {
-    setEditedParticipants((prev) => {
-      const selected = prev.some((row) => row.remoteUserId === friend.userId);
-      const next = selected
-        ? prev.filter((row) => row.remoteUserId !== friend.userId)
-        : [
-            ...prev,
-            {
-              name: friend.displayName,
-              shareAmount: '0',
-              locked: false,
-              username: friend.username,
-              remoteUserId: friend.userId,
-            },
-          ];
-      applyEvenSplit(next);
-      return next;
-    });
+    // Compute from current state and apply side effects outside any state
+    // updater: updaters must be pure (React may invoke them twice), and
+    // applyEvenSplit calls setShare/setEditedParticipants itself.
+    const prev = editedParticipants;
+    const selected = prev.some((row) => row.remoteUserId === friend.userId);
+    const next = selected
+      ? prev.filter((row) => row.remoteUserId !== friend.userId)
+      : [
+          ...prev,
+          {
+            name: friend.displayName,
+            shareAmount: '0',
+            locked: false,
+            username: friend.username,
+            remoteUserId: friend.userId,
+          },
+        ];
+    applyEvenSplit(next);
   };
 
   const editParticipantShare = (index: number, value: string) => {

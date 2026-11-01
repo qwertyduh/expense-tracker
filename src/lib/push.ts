@@ -14,7 +14,11 @@ Notifications.setNotificationHandler({
   }),
 });
 
-export async function registerForPushNotifications(userId: string): Promise<void> {
+// The token this install registered, so sign-out removes only this device and
+// leaves the account's other devices subscribed.
+let registeredToken: string | null = null;
+
+export async function registerForPushNotifications(_userId: string): Promise<void> {
   if (!Device.isDevice) return;
 
   if (Platform.OS === 'android') {
@@ -39,13 +43,22 @@ export async function registerForPushNotifications(userId: string): Promise<void
 
   const token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
 
-  await supabase.from('devices').upsert(
-    {
-      user_id: userId,
-      expo_push_token: token,
-      platform: Platform.OS === 'ios' ? 'ios' : Platform.OS === 'android' ? 'android' : 'unknown',
-      last_seen_at: new Date().toISOString(),
-    },
-    { onConflict: 'expo_push_token' }
-  );
+  // A token belongs to one account at a time. A plain upsert is blocked by RLS
+  // when another account on this device owned it, so reassignment goes through
+  // a security-definer RPC. The error must surface: a silent failure here means
+  // the previous account keeps receiving this device's notifications.
+  const { error } = await supabase.rpc('register_device', {
+    p_token: token,
+    p_platform: Platform.OS === 'ios' ? 'ios' : Platform.OS === 'android' ? 'android' : 'unknown',
+  });
+  if (error) throw error;
+  registeredToken = token;
+}
+
+export async function unregisterPushToken(): Promise<void> {
+  const token = registeredToken;
+  if (!token) return;
+  const { error } = await supabase.rpc('unregister_device', { p_token: token });
+  if (error) throw error;
+  registeredToken = null;
 }

@@ -1,6 +1,6 @@
 import { Link, useRouter } from 'expo-router';
 import { useState } from 'react';
-import { ActivityIndicator, StyleSheet, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { Button } from '@/components/ui/button';
@@ -45,9 +45,16 @@ export default function SignInScreen() {
         contentStyle={styles.content}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag">
+        <Pressable
+          onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))}
+          hitSlop={12}>
+          <ThemedText type="small" themeColor="textSecondary">
+            ‹ Not now
+          </ThemedText>
+        </Pressable>
         <ScreenHeader
           title="Expense Tracker"
-          subtitle="Sign in to sync shared expenses with friends."
+          subtitle="Sign in to add friends and share expenses."
         />
 
         {!configured ? (

@@ -141,7 +141,13 @@ class PaymentAccessibilityService : AccessibilityService() {
 
     private fun commit(rawText: String) {
         Log.i(TAG, "payment committed: ${summarize(rawText)}")
-        captureHandler.onCommitted(rawText)
+        // A DB lock or schema error must not kill the accessibility service,
+        // which would silently stop all future capture.
+        try {
+            captureHandler.onCommitted(rawText)
+        } catch (e: Exception) {
+            Log.e(TAG, "capture failed", e)
+        }
     }
 
     /** True when the clicked node (or a descendant) is GPay's Pay action. */

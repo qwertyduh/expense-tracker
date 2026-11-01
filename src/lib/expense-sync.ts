@@ -1,6 +1,7 @@
 import { getExpense, getExpenseParticipants } from '@/db/expenses';
 import { db } from '@/db/schema';
 import {
+  cancelOutbox,
   enqueueSharedExpense,
   enqueueSharedExpenseUpdate,
   enqueueSharedExpenseVoid,
@@ -24,11 +25,13 @@ export function syncExpenseAfterEdit(expenseId: string): void {
 
   if (linked.length === 0) {
     if (expense.shared_expense_id) {
+      // Keep shared_expense_id until the server confirms the void (sync.ts
+      // clears it then). If the void is rejected (expense_locked because a
+      // friend already paid), the row must still know it is shared.
       enqueueSharedExpenseVoid(expense.shared_expense_id);
       db.runSync(
         `UPDATE expenses
-            SET shared_expense_id = NULL, sync_status = 'local', split_pending = 0,
-                updated_at = ?
+            SET sync_status = 'pending', split_pending = 0, updated_at = ?
           WHERE id = ?`,
         new Date().toISOString(),
         expenseId
@@ -45,6 +48,9 @@ export function syncExpenseAfterEdit(expenseId: string): void {
   }
 
   const sharedId = expense.shared_expense_id ?? expense.id;
+  // A friend was added back before a queued void was sent (or after it was
+  // rejected): the void no longer reflects the user's intent.
+  cancelOutbox('shared_expense', sharedId, 'void');
   db.runSync(
     `UPDATE expenses
         SET shared_expense_id = ?, sync_status = 'pending', split_pending = 0,

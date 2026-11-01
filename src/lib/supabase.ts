@@ -30,6 +30,9 @@ export const supabase = createClient(
 );
 
 if (isSupabaseConfigured) {
+  // The listener only fires on a *change*, so a cold start already in the
+  // foreground would never start auto-refresh without this.
+  if (AppState.currentState === 'active') supabase.auth.startAutoRefresh();
   AppState.addEventListener('change', (state) => {
     if (state === 'active') {
       supabase.auth.startAutoRefresh();

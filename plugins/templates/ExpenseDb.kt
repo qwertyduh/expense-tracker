@@ -2,6 +2,7 @@ package com.buildqwertyduh.expensetracker
 
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
+import android.util.Log
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
@@ -258,7 +259,8 @@ class ExpenseDb(context: Context) {
         return null
     }
 
-    fun rememberMerchant(merchant: String, categoryId: String, splitCount: Int) {
+    /** [splitCount] null keeps the previously remembered count (1 for a new merchant). */
+    fun rememberMerchant(merchant: String, categoryId: String, splitCount: Int?) {
         val now = nowIso()
         open().use { db ->
             db.execSQL(
@@ -267,10 +269,10 @@ class ExpenseDb(context: Context) {
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(merchant) DO UPDATE SET
                   category_id = excluded.category_id,
-                  split_count = excluded.split_count,
+                  split_count = COALESCE(?, merchant_memory.split_count),
                   updated_at = excluded.updated_at
                 """.trimIndent(),
-                arrayOf(merchant, categoryId, splitCount, now)
+                arrayOf(merchant, categoryId, splitCount ?: 1, now, splitCount)
             )
         }
     }
@@ -303,7 +305,9 @@ class ExpenseDb(context: Context) {
         val now = nowIso()
         val total = round2(input.totalAmount)
         val amount = round2(input.selfShare.coerceIn(0.0, total))
-        val isSplit = if (input.splitPending || amount < total || input.participants.isNotEmpty()) 1 else 0
+        // Same rule as src/db/expenses.ts: a split is a share below the bill. A
+        // pending split booked at the full bill is not shown as "split".
+        val isSplit = if (amount < total || input.participants.isNotEmpty()) 1 else 0
         val splitPending = if (input.splitPending) 1 else 0
         val linked = input.participants.isNotEmpty()
         val sharedExpenseId = if (linked) expenseId else null
@@ -422,6 +426,7 @@ class ExpenseDb(context: Context) {
             }
             expenseId
         } catch (e: Exception) {
+            Log.e("ExpenseDb", "insertExpense failed", e)
             null
         }
     }
@@ -447,8 +452,17 @@ class ExpenseDb(context: Context) {
             }
         }
         db.rawQuery(
-            "SELECT id FROM people WHERE username = ? COLLATE NOCASE LIMIT 1",
-            arrayOf(username)
+            // Never the self row, and never a person already linked to a
+            // different account (people_remote_user_idx would reject the update
+            // and the whole expense would be lost).
+            """
+            SELECT id FROM people
+            WHERE username = ? COLLATE NOCASE
+              AND is_self = 0
+              AND (remote_user_id IS NULL OR remote_user_id = ?)
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(username, userId)
         ).use { cursor ->
             if (cursor.moveToFirst()) {
                 val id = cursor.getString(0)
@@ -464,6 +478,14 @@ class ExpenseDb(context: Context) {
             "INSERT INTO people (id, display_name, is_self, remote_user_id, username, created_at, updated_at) VALUES (?, ?, 0, ?, ?, ?, ?)",
             arrayOf(id, displayName, userId, username, now, now)
         )
+        // Mirror src/db/people.ts rememberHandle(name, id, 'name') so a later
+        // SMS/repayment name resolves to this person instead of a duplicate.
+        runCatching {
+            db.execSQL(
+                "INSERT OR IGNORE INTO person_handles (handle_key, person_id, kind, label, created_at, updated_at) VALUES (?, ?, 'name', ?, ?, ?)",
+                arrayOf(displayName.trim().replace(Regex("\\s+"), " ").lowercase(), id, displayName, now, now)
+            )
+        }
         return id
     }
 

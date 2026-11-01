@@ -1,11 +1,19 @@
 import type { Session } from '@supabase/supabase-js';
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
 import { clearFriendCache } from '@/db/friends';
 import { linkSelfToProfile } from '@/db/people';
 import { clearSharedDebtCache } from '@/db/shared-debts';
 import { loadFriends } from '@/lib/friends';
-import { registerForPushNotifications } from '@/lib/push';
+import { registerForPushNotifications, unregisterPushToken } from '@/lib/push';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { clearActiveUserId, flushOutbox, setActiveUserId } from '@/lib/sync';
 
@@ -63,27 +71,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(isSupabaseConfigured);
 
-  const applyProfile = useCallback(async (userId: string | null) => {
+  // Monotonic token: an applyProfile for an older user/sign-out must never
+  // write state after a newer one started.
+  const applyGeneration = useRef(0);
+  const appliedUserId = useRef<string | null>(null);
+
+  const applyProfile = useCallback(async (userId: string | null, force = false) => {
+    const generation = ++applyGeneration.current;
+    const current = () => generation === applyGeneration.current;
+
     if (!userId) {
+      appliedUserId.current = null;
       clearActiveUserId();
       setProfile(null);
       return;
     }
+
+    // The session is known locally, so sync ownership must not depend on the
+    // network: an offline cold start would otherwise leave no active user and
+    // quarantine every shared expense queued that session.
+    setActiveUserId(userId);
+
     const next = await fetchProfile(userId).catch(() => null);
+    if (!current()) return;
     setProfile(next);
-    if (next) {
-      // Set before anything enqueues or flushes: every outbox row is scoped to
-      // this id and must never be sent under a different account.
-      setActiveUserId(next.id);
-      linkSelfToProfile({
-        remoteUserId: next.id,
-        username: next.username,
-        displayName: next.display_name,
-      });
-      flushOutbox().catch(() => {});
-      loadFriends().catch(() => {});
-      registerForPushNotifications(next.id).catch(() => {});
-    }
+    if (!next) return;
+
+    // Token refreshes re-emit the session; don't redo the whole bootstrap.
+    if (appliedUserId.current === userId && !force) return;
+    appliedUserId.current = userId;
+
+    linkSelfToProfile({
+      remoteUserId: next.id,
+      username: next.username,
+      displayName: next.display_name,
+    });
+    flushOutbox().catch(() => {});
+    loadFriends().catch(() => {});
+    registerForPushNotifications(next.id).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -91,17 +116,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     let active = true;
 
-    supabase.auth.getSession().then(({ data }) => {
-      if (!active) return;
-      setSession(data.session);
-      applyProfile(data.session?.user.id ?? null).finally(() => {
+    supabase.auth
+      .getSession()
+      .then(({ data }) => {
+        if (!active) return;
+        setSession(data.session);
+        return applyProfile(data.session?.user.id ?? null);
+      })
+      .catch(() => {
+        // Unreadable stored session: treat as signed out rather than hanging
+        // on the blank gate forever.
+        if (active) setSession(null);
+      })
+      .finally(() => {
         if (active) setLoading(false);
       });
-    });
 
     const { data: subscription } = supabase.auth.onAuthStateChange((_event, next) => {
       setSession(next);
-      applyProfile(next?.user.id ?? null);
+      // supabase-js holds its auth lock while this callback runs; awaiting
+      // another supabase call inside it can deadlock, so defer.
+      setTimeout(() => {
+        if (active) applyProfile(next?.user.id ?? null).catch(() => {});
+      }, 0);
     });
 
     return () => {
@@ -141,15 +178,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signOut = useCallback(async () => {
     const userId = session?.user.id ?? null;
 
-    // Best-effort: stop this device receiving the old account's notifications.
-    // A network failure must not block signing out.
-    if (userId) {
-      try {
-        await supabase.from('devices').delete().eq('user_id', userId);
-      } catch {
-        // Ignore; the next sign-in re-registers the token.
-      }
-    }
+    // Best-effort: stop this device receiving the old account's notifications
+    // (only this device; the account's other devices stay subscribed). A
+    // network failure must not block signing out.
+    await unregisterPushToken().catch(() => {});
 
     // Account-scoped caches and the outbox owner go first, so nothing from this
     // account can flush or render under the next one. Outbox rows themselves
@@ -169,7 +201,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const refreshProfile = useCallback(async () => {
     const userId = session?.user.id;
-    if (userId) await applyProfile(userId);
+    if (userId) await applyProfile(userId, true);
   }, [applyProfile, session?.user.id]);
 
   const value = useMemo(

@@ -12,16 +12,29 @@ function remainingOf(row: SharedDebtRow): number {
   return Math.round((row.shareAmount - row.settledAmount) * 100) / 100;
 }
 
+function words(value: string): string[] {
+  return value
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean);
+}
+
+// Whole-name or whole-word matches only. Arbitrary substring containment made
+// "Al" match "Alice" and "Bob" match "bobby", floating the wrong person's debt
+// to the top of a settlement prompt.
 function nameMatches(hint: string | null, row: SharedDebtRow): boolean {
   if (!hint) return false;
   const normalized = hint.trim().toLowerCase();
   if (!normalized) return false;
-  return (
-    row.counterpartyUsername.toLowerCase() === normalized ||
-    row.counterpartyDisplayName.toLowerCase() === normalized ||
-    row.counterpartyDisplayName.toLowerCase().includes(normalized) ||
-    normalized.includes(row.counterpartyDisplayName.toLowerCase())
-  );
+
+  const username = row.counterpartyUsername.toLowerCase();
+  const display = row.counterpartyDisplayName.trim().toLowerCase();
+  if (username === normalized || display === normalized) return true;
+
+  // Words shorter than 3 characters are too ambiguous to identify anyone.
+  const hintWords = words(normalized).filter((word) => word.length >= 3);
+  const nameWords = new Set([...words(display), username]);
+  return hintWords.some((word) => nameWords.has(word));
 }
 
 /**
@@ -59,6 +72,13 @@ export function rankSettlementMatches(
     .sort((a, b) => {
       if (a.exact !== b.exact) return a.exact ? -1 : 1;
       if (a.nameMatch !== b.nameMatch) return a.nameMatch ? -1 : 1;
-      return Math.abs(input.amount - a.remaining) - Math.abs(input.amount - b.remaining);
+      const byDistance =
+        Math.abs(input.amount - a.remaining) - Math.abs(input.amount - b.remaining);
+      if (byDistance !== 0) return byDistance;
+      // Deterministic: oldest debt first, then id, independent of input order.
+      if (a.row.occurredAt !== b.row.occurredAt) {
+        return a.row.occurredAt < b.row.occurredAt ? -1 : 1;
+      }
+      return a.row.participantId < b.row.participantId ? -1 : 1;
     });
 }

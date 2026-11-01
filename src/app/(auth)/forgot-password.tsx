@@ -118,7 +118,7 @@ export default function ForgotPasswordScreen() {
               <ThemedText type="smallBold">One-time code</ThemedText>
               <TextInput
                 value={otp}
-                onChangeText={(value) => setOtp(value.replace(/\D/g, '').slice(0, 6))}
+                onChangeText={(value) => setOtp(value.replace(/\D/g, '').slice(0, 8))}
                 keyboardType="number-pad"
                 maxLength={8}
                 placeholder="12345678"
