@@ -1,5 +1,5 @@
 import * as Linking from 'expo-linking';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Alert, Modal, Platform, Pressable, StyleSheet, Switch, TextInput, View } from 'react-native';
 
@@ -25,6 +25,8 @@ import {
 } from '@/db/person-handles';
 import { paymentDetection, type DetectionMode } from '@/lib/payment-detection';
 import { syncMerchantCategoryMap } from '@/lib/merchant-category-sync';
+import { useAuth } from '@/hooks/use-auth';
+import { useSyncStatus } from '@/hooks/use-sync-status';
 import { useTheme } from '@/hooks/use-theme';
 
 const MODES: { value: DetectionMode; label: string; hint: string }[] = [
@@ -35,6 +37,14 @@ const MODES: { value: DetectionMode; label: string; hint: string }[] = [
 
 export default function SettingsScreen() {
   const theme = useTheme();
+  const router = useRouter();
+  const { configured, session, profile, signOut } = useAuth();
+  const {
+    pending: pendingSync,
+    failed: failedSync,
+    lastError: syncError,
+    retry: retrySync,
+  } = useSyncStatus();
   const [selfName, setSelfName] = useState('');
   const [memory, setMemory] = useState<MerchantMemoryRow[]>([]);
   const [people, setPeople] = useState<PersonWithHandles[]>([]);
@@ -131,6 +141,24 @@ export default function SettingsScreen() {
     ]);
   };
 
+  const confirmSignOut = () => {
+    const unsynced = pendingSync + failedSync;
+    const message =
+      unsynced > 0
+        ? `${unsynced} change${unsynced === 1 ? '' : 's'} haven't synced yet. They will resume if you sign back in. Shared expenses will stop syncing until then.`
+        : 'Shared expenses will stop syncing until you sign in again.';
+    Alert.alert('Sign out?', message, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Sign out',
+        style: 'destructive',
+        onPress: () => {
+          signOut().catch(() => {});
+        },
+      },
+    ]);
+  };
+
   const resetMemory = () => {
     Alert.alert('Reset learned payees?', 'All remembered payee → category mappings will be cleared.', [
       { text: 'Cancel', style: 'cancel' },
@@ -151,6 +179,56 @@ export default function SettingsScreen() {
   return (
     <Screen>
       <ScreenHeader title="Settings" />
+
+      <Card style={styles.detectionCard}>
+        <ThemedText type="small" themeColor="textSecondary">
+          Account
+        </ThemedText>
+        <ThemedText type="subtitle">{profile?.display_name ?? selfName}</ThemedText>
+        <ThemedText type="small" themeColor="textSecondary">
+          {session
+            ? `@${profile?.username ?? '…'}`
+            : 'Local only. Sign in to add friends and split expenses.'}
+        </ThemedText>
+        {session ? (
+          <>
+            <Button
+              title="Friends"
+              variant="secondary"
+              onPress={() => router.push('/friends')}
+            />
+            <Button title="Sign out" variant="ghost" onPress={confirmSignOut} />
+          </>
+        ) : configured ? (
+          <>
+            <Button title="Sign in" onPress={() => router.push('/sign-in')} />
+            <Button
+              title="Create account"
+              variant="secondary"
+              onPress={() => router.push('/sign-up')}
+            />
+          </>
+        ) : null}
+      </Card>
+
+      <Card style={styles.detectionCard}>
+        <ThemedText type="small" themeColor="textSecondary">
+          Sync
+        </ThemedText>
+        <View style={styles.rowBetween}>
+          <ThemedText type="default">
+            {pendingSync} pending · {failedSync} failed
+          </ThemedText>
+          {failedSync > 0 ? (
+            <Button title="Retry" variant="secondary" onPress={retrySync} />
+          ) : null}
+        </View>
+        {syncError ? (
+          <ThemedText type="small" themeColor="danger" numberOfLines={3}>
+            {syncError}
+          </ThemedText>
+        ) : null}
+      </Card>
 
       <Card>
         <ThemedText type="small" themeColor="textSecondary">

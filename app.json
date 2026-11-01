@@ -10,6 +10,7 @@
     "ios": {
       "icon": "./assets/expo.icon",
       "bundleIdentifier": "com.buildqwertyduh.expensetracker",
+      "appleTeamId": "722APWTJ34",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSSupportsLiveActivities": true
@@ -52,7 +53,9 @@
         }
       ],
       "@bacons/apple-targets",
-      "expo-app-intents"
+      "expo-app-intents",
+      "expo-secure-store",
+      "expo-notifications"
     ],
     "experiments": {
       "typedRoutes": true,

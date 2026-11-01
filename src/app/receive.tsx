@@ -1,6 +1,6 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -27,6 +27,8 @@ import {
 } from '@/lib/matching';
 import { parseIncomingSms } from '@/parsers';
 import { formatDate } from '@/lib/format';
+import { findSettlementMatches } from '@/lib/settlement-matching';
+import { settleSharedDebt } from '@/lib/shared-debts';
 
 const STEP_NAMES = ['Amount', 'Person', 'Expense', 'Confirm'] as const;
 const LAST_STEP = STEP_NAMES.length - 1;
@@ -179,6 +181,7 @@ export default function ReceiveScreen() {
   const { intent, clear } = useReceiveIntent();
   const params = useLocalSearchParams<{ expenseId?: string }>();
   const keyboardHeight = useKeyboardHeight();
+  const theme = useTheme();
 
   const [initial] = useState(() => buildInitial(intent, params.expenseId ?? null));
   const [currentStep, setCurrentStep] = useState(0);
@@ -214,6 +217,16 @@ export default function ReceiveScreen() {
         amountNum,
         personName.trim() || null
       ),
+    [amountNum, personName]
+  );
+
+  const sharedMatches = useMemo(
+    () =>
+      findSettlementMatches({
+        amount: amountNum,
+        direction: 'incoming',
+        counterpartyHint: personName,
+      }),
     [amountNum, personName]
   );
 
@@ -291,6 +304,39 @@ export default function ReceiveScreen() {
     timer.current = setTimeout(goHome, SAVED_DELAY_MS);
   };
 
+  const settleDetectedShared = (participantId: string, sharedExpenseId: string) => {
+    settleSharedDebt({
+      participantId,
+      expenseId: sharedExpenseId,
+      amount: amountNum,
+      method: 'detected_incoming',
+    })
+      .then((outcome) => {
+        if (outcome.state === 'failed') {
+          Alert.alert(
+            'Could not settle shared debt',
+            outcome.error ?? 'Try again.'
+          );
+          return;
+        }
+        if (receiptId) markIncomingReceipt(receiptId, 'linked');
+        if (outcome.state === 'pending') {
+          Alert.alert(
+            'Saved',
+            'The payment will be recorded when you are back online.'
+          );
+        }
+        setSaved(true);
+        timer.current = setTimeout(goHome, SAVED_DELAY_MS);
+      })
+      .catch((err) => {
+        Alert.alert(
+          'Could not settle shared debt',
+          err instanceof Error ? err.message : 'Try again.'
+        );
+      });
+  };
+
   const confirm = () => {
     if (!canConfirm) return;
     // A single share that isn't exactly covered needs a decision, not a silent
@@ -360,6 +406,31 @@ export default function ReceiveScreen() {
           </Pressable>
         )}
       </View>
+
+      {!saved && currentStep === 2 && sharedMatches.length > 0 ? (
+        <View
+          style={[
+            styles.sharedMatch,
+            { borderColor: theme.accent, backgroundColor: theme.backgroundElement },
+          ]}>
+          <ThemedText type="smallBold">Possible shared debt</ThemedText>
+          {sharedMatches.slice(0, 2).map((match) => (
+            <View key={match.row.participantId} style={styles.sharedMatchRow}>
+              <ThemedText type="small" style={styles.sharedMatchText}>
+                @{match.row.counterpartyUsername} · {match.row.label ?? 'Shared expense'} ·{' '}
+                {fmt(match.remaining)}
+                {match.exact ? ' · exact match' : ' · within ₹1'}
+              </ThemedText>
+              <Pressable
+                onPress={() =>
+                  settleDetectedShared(match.row.participantId, match.row.expenseId)
+                }>
+                <ThemedText type="linkPrimary">Settle</ThemedText>
+              </Pressable>
+            </View>
+          ))}
+        </View>
+      ) : null}
 
       {saved ? (
         <View style={styles.saved}>
@@ -893,6 +964,22 @@ const styles = StyleSheet.create({
   },
   hint: {
     textAlign: 'center',
+  },
+  sharedMatch: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Spacing.three,
+    padding: Spacing.three,
+    gap: Spacing.two,
+    marginHorizontal: Spacing.four,
+  },
+  sharedMatchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.three,
+  },
+  sharedMatchText: {
+    flex: 1,
   },
   saved: {
     flex: 1,

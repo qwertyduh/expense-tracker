@@ -2,6 +2,7 @@ package com.buildqwertyduh.expensetracker
 
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
+import android.util.Log
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
@@ -25,6 +26,7 @@ class ExpenseDb(context: Context) {
 
     data class Category(val id: String, val name: String)
     data class MerchantMemory(val categoryId: String, val splitCount: Int)
+    data class Friend(val userId: String, val username: String, val displayName: String)
 
     private val appContext = context.applicationContext
     private val dbFile = File(appContext.filesDir, "SQLite/expense-tracker.db")
@@ -51,6 +53,110 @@ class ExpenseDb(context: Context) {
                 """.trimIndent()
             )
             ensureUnsortedCategory(db)
+            ensureColumn(db, "people", "remote_user_id", "TEXT")
+            ensureColumn(db, "people", "username", "TEXT")
+            ensureColumn(db, "expenses", "split_pending", "INTEGER NOT NULL DEFAULT 0")
+            ensureColumn(db, "expenses", "shared_expense_id", "TEXT")
+            ensureColumn(db, "expenses", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
+            ensureColumn(db, "expense_participants", "participant_user_id", "TEXT")
+            ensureColumn(db, "expense_participants", "share_status", "TEXT NOT NULL DEFAULT 'local'")
+            ensureColumn(db, "expense_participants", "remote_participant_id", "TEXT")
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS friend_cache (
+                  user_id TEXT PRIMARY KEY,
+                  username TEXT NOT NULL,
+                  display_name TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  direction TEXT,
+                  friendship_id TEXT,
+                  updated_at TEXT NOT NULL
+                )
+                """.trimIndent()
+            )
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS sync_outbox (
+                  id TEXT PRIMARY KEY,
+                  entity_type TEXT NOT NULL,
+                  entity_id TEXT NOT NULL,
+                  operation TEXT NOT NULL,
+                  payload TEXT NOT NULL,
+                  user_id TEXT,
+                  status TEXT NOT NULL DEFAULT 'pending',
+                  attempts INTEGER NOT NULL DEFAULT 0,
+                  next_attempt_at TEXT,
+                  last_error TEXT,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                )
+                """.trimIndent()
+            )
+            // Keep these in sync with src/db/schema.ts migrateAddColumns().
+            ensureColumn(db, "sync_outbox", "user_id", "TEXT")
+            ensureColumn(db, "sync_outbox", "status", "TEXT NOT NULL DEFAULT 'pending'")
+        }
+    }
+
+    /**
+     * Outbox rows are owned by the signed-in account. JS writes this key on
+     * sign-in and clears it on sign-out; a missing value means "no owner".
+     */
+    private fun activeUserId(db: SQLiteDatabase): String? =
+        runCatching {
+            db.rawQuery(
+                "SELECT value FROM sync_state WHERE key = 'active_user_id' LIMIT 1",
+                null
+            ).use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            }
+        }.getOrNull()
+
+    private fun ensureColumn(db: SQLiteDatabase, table: String, column: String, definition: String) {
+        db.rawQuery("PRAGMA table_info($table)", null).use { cursor ->
+            val nameIndex = cursor.getColumnIndex("name")
+            while (cursor.moveToNext()) {
+                if (cursor.getString(nameIndex) == column) return
+            }
+        }
+        db.execSQL("ALTER TABLE $table ADD COLUMN $column $definition")
+    }
+
+    /**
+     * Accepted friends ordered by the most recent shared expense with them,
+     * then alphabetically. The overlay only needs the top five.
+     */
+    fun topFriends(limit: Int = 5): List<Friend> {
+        if (!exists()) return emptyList()
+        open().use { db ->
+            db.rawQuery(
+                """
+                SELECT fc.user_id, fc.username, fc.display_name
+                FROM friend_cache fc
+                WHERE fc.status = 'accepted'
+                ORDER BY (
+                  SELECT MAX(e.occurred_at)
+                  FROM expense_participants ep
+                  JOIN expenses e ON e.id = ep.expense_id
+                  WHERE ep.participant_user_id = fc.user_id
+                ) IS NULL ASC,
+                (
+                  SELECT MAX(e.occurred_at)
+                  FROM expense_participants ep
+                  JOIN expenses e ON e.id = ep.expense_id
+                  WHERE ep.participant_user_id = fc.user_id
+                ) DESC,
+                fc.display_name ASC
+                LIMIT ?
+                """.trimIndent(),
+                arrayOf(limit.toString())
+            ).use { cursor ->
+                val out = ArrayList<Friend>(cursor.count)
+                while (cursor.moveToNext()) {
+                    out.add(Friend(cursor.getString(0), cursor.getString(1), cursor.getString(2)))
+                }
+                return out
+            }
         }
     }
 
@@ -153,7 +259,8 @@ class ExpenseDb(context: Context) {
         return null
     }
 
-    fun rememberMerchant(merchant: String, categoryId: String, splitCount: Int) {
+    /** [splitCount] null keeps the previously remembered count (1 for a new merchant). */
+    fun rememberMerchant(merchant: String, categoryId: String, splitCount: Int?) {
         val now = nowIso()
         open().use { db ->
             db.execSQL(
@@ -162,13 +269,20 @@ class ExpenseDb(context: Context) {
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(merchant) DO UPDATE SET
                   category_id = excluded.category_id,
-                  split_count = excluded.split_count,
+                  split_count = COALESCE(?, merchant_memory.split_count),
                   updated_at = excluded.updated_at
                 """.trimIndent(),
-                arrayOf(merchant, categoryId, splitCount, now)
+                arrayOf(merchant, categoryId, splitCount ?: 1, now, splitCount)
             )
         }
     }
+
+    data class NewParticipant(
+        val userId: String,
+        val username: String,
+        val displayName: String,
+        val shareAmount: Double
+    )
 
     data class NewExpense(
         val totalAmount: Double,
@@ -176,7 +290,9 @@ class ExpenseDb(context: Context) {
         val categoryId: String,
         val label: String?,
         val merchant: String?,
-        val rawText: String?
+        val rawText: String?,
+        val splitPending: Boolean = false,
+        val participants: List<NewParticipant> = emptyList()
     )
 
     /**
@@ -187,9 +303,15 @@ class ExpenseDb(context: Context) {
     fun insertExpense(input: NewExpense): String? {
         val expenseId = UUID.randomUUID().toString()
         val now = nowIso()
-        val amount = round2(input.selfShare.coerceIn(0.0, input.totalAmount))
         val total = round2(input.totalAmount)
-        val isSplit = if (amount < total) 1 else 0
+        val amount = round2(input.selfShare.coerceIn(0.0, total))
+        // Same rule as src/db/expenses.ts: a split is a share below the bill. A
+        // pending split booked at the full bill is not shown as "split".
+        val isSplit = if (amount < total || input.participants.isNotEmpty()) 1 else 0
+        val splitPending = if (input.splitPending) 1 else 0
+        val linked = input.participants.isNotEmpty()
+        val sharedExpenseId = if (linked) expenseId else null
+        val syncStatus = if (linked) "pending" else "local"
 
         val snapshot = JSONObject().apply {
             put("id", expenseId)
@@ -203,6 +325,9 @@ class ExpenseDb(context: Context) {
             put("bank_source", BANK_SOURCE)
             put("raw_sms_text", input.rawText)
             put("is_split", isSplit)
+            put("split_pending", splitPending)
+            put("shared_expense_id", sharedExpenseId)
+            put("sync_status", syncStatus)
             put("occurred_at", now)
             put("created_at", now)
             put("updated_at", now)
@@ -216,14 +341,39 @@ class ExpenseDb(context: Context) {
                         """
                         INSERT INTO expenses
                           (id, amount, total_amount, currency, category_id, label, merchant,
-                           source, bank_source, raw_sms_text, is_split, occurred_at, created_at, updated_at)
-                        VALUES (?, ?, ?, 'INR', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           source, bank_source, raw_sms_text, is_split, split_pending,
+                           shared_expense_id, sync_status, occurred_at, created_at, updated_at)
+                        VALUES (?, ?, ?, 'INR', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """.trimIndent(),
                         arrayOf(
                             expenseId, amount, total, input.categoryId, input.label, input.merchant,
-                            SOURCE, BANK_SOURCE, input.rawText, isSplit, now, now, now
+                            SOURCE, BANK_SOURCE, input.rawText, isSplit, splitPending,
+                            sharedExpenseId, syncStatus, now, now, now
                         )
                     )
+
+                    for (participant in input.participants) {
+                        val personId = findOrCreateAccountPerson(
+                            db,
+                            participant.userId,
+                            participant.username,
+                            participant.displayName,
+                            now
+                        )
+                        db.execSQL(
+                            """
+                            INSERT INTO expense_participants
+                              (id, expense_id, person_id, participant_user_id, share_amount,
+                               share_status, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+                            """.trimIndent(),
+                            arrayOf(
+                                UUID.randomUUID().toString(), expenseId, personId,
+                                participant.userId, round2(participant.shareAmount), now, now
+                            )
+                        )
+                    }
+
                     db.execSQL(
                         """
                         INSERT INTO activity_log (id, action, expense_id, expense_snapshot, occurred_at, created_at)
@@ -231,6 +381,44 @@ class ExpenseDb(context: Context) {
                         """.trimIndent(),
                         arrayOf(UUID.randomUUID().toString(), expenseId, snapshot.toString(), now, now)
                     )
+
+                    if (linked) {
+                        val payload = JSONObject().apply {
+                            put("id", expenseId)
+                            put("total_amount", total)
+                            put("owner_share", amount)
+                            put("label", input.label)
+                            put("occurred_at", now)
+                            put("participants", org.json.JSONArray().apply {
+                                input.participants.forEach { participant ->
+                                    put(JSONObject().apply {
+                                        put("username", participant.username)
+                                        put("share_amount", round2(participant.shareAmount))
+                                    })
+                                }
+                            })
+                        }
+                        val userId = activeUserId(db)
+                        db.execSQL(
+                            """
+                            INSERT OR REPLACE INTO sync_outbox
+                              (id, entity_type, entity_id, operation, payload, user_id,
+                               status, attempts, next_attempt_at, last_error, created_at, updated_at)
+                            VALUES (?, 'shared_expense', ?, 'create', ?, ?, ?, 0, NULL, ?, ?, ?)
+                            """.trimIndent(),
+                            arrayOf(
+                                "shared_expense:$expenseId:create",
+                                expenseId,
+                                payload.toString(),
+                                userId,
+                                if (userId != null) "pending" else "failed",
+                                if (userId != null) null else "missing_user",
+                                now,
+                                now
+                            )
+                        )
+                    }
+
                     db.setTransactionSuccessful()
                 } finally {
                     db.endTransaction()
@@ -238,15 +426,98 @@ class ExpenseDb(context: Context) {
             }
             expenseId
         } catch (e: Exception) {
+            Log.e("ExpenseDb", "insertExpense failed", e)
             null
         }
     }
 
+    private fun findOrCreateAccountPerson(
+        db: SQLiteDatabase,
+        userId: String,
+        username: String,
+        displayName: String,
+        now: String
+    ): String {
+        db.rawQuery(
+            "SELECT id FROM people WHERE remote_user_id = ? LIMIT 1",
+            arrayOf(userId)
+        ).use { cursor ->
+            if (cursor.moveToFirst()) {
+                val id = cursor.getString(0)
+                db.execSQL(
+                    "UPDATE people SET display_name = ?, username = ?, updated_at = ? WHERE id = ?",
+                    arrayOf(displayName, username, now, id)
+                )
+                return id
+            }
+        }
+        db.rawQuery(
+            // Never the self row, and never a person already linked to a
+            // different account (people_remote_user_idx would reject the update
+            // and the whole expense would be lost).
+            """
+            SELECT id FROM people
+            WHERE username = ? COLLATE NOCASE
+              AND is_self = 0
+              AND (remote_user_id IS NULL OR remote_user_id = ?)
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(username, userId)
+        ).use { cursor ->
+            if (cursor.moveToFirst()) {
+                val id = cursor.getString(0)
+                db.execSQL(
+                    "UPDATE people SET remote_user_id = ?, display_name = ?, username = ?, updated_at = ? WHERE id = ?",
+                    arrayOf(userId, displayName, username, now, id)
+                )
+                return id
+            }
+        }
+        val id = UUID.randomUUID().toString()
+        db.execSQL(
+            "INSERT INTO people (id, display_name, is_self, remote_user_id, username, created_at, updated_at) VALUES (?, ?, 0, ?, ?, ?, ?)",
+            arrayOf(id, displayName, userId, username, now, now)
+        )
+        // Mirror src/db/people.ts rememberHandle(name, id, 'name') so a later
+        // SMS/repayment name resolves to this person instead of a duplicate.
+        runCatching {
+            db.execSQL(
+                "INSERT OR IGNORE INTO person_handles (handle_key, person_id, kind, label, created_at, updated_at) VALUES (?, ?, 'name', ?, ?, ?)",
+                arrayOf(displayName.trim().replace(Regex("\\s+"), " ").lowercase(), id, displayName, now, now)
+            )
+        }
+        return id
+    }
+
+    /**
+     * Local-only delete: the shared copy stays active on the server for the
+     * other participants. Cancel queued create/update rows so a deleted
+     * expense is never pushed, but keep any queued void. Dependent rows are
+     * deleted explicitly because this connection does not enable foreign keys.
+     */
     fun deleteExpense(expenseId: String) {
         if (!exists()) return
         open().use { db ->
             db.beginTransaction()
             try {
+                val sharedExpenseId = db.rawQuery(
+                    "SELECT shared_expense_id FROM expenses WHERE id = ?",
+                    arrayOf(expenseId)
+                ).use { cursor ->
+                    if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getString(0) else expenseId
+                }
+                db.execSQL(
+                    "DELETE FROM sync_outbox WHERE entity_type = 'shared_expense' AND entity_id IN (?, ?) AND operation IN ('create', 'update')",
+                    arrayOf(expenseId, sharedExpenseId)
+                )
+                db.execSQL(
+                    "DELETE FROM settlement_allocations WHERE expense_id = ?",
+                    arrayOf(expenseId)
+                )
+                db.execSQL(
+                    "DELETE FROM expense_participants WHERE expense_id = ?",
+                    arrayOf(expenseId)
+                )
                 db.execSQL("DELETE FROM expenses WHERE id = ?", arrayOf(expenseId))
                 db.execSQL(
                     "INSERT INTO activity_log (id, action, expense_id, expense_snapshot, occurred_at, created_at) VALUES (?, 'deleted', ?, '{}', ?, ?)",

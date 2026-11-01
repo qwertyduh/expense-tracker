@@ -1,6 +1,6 @@
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { Alert, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -10,6 +10,7 @@ import { Screen, ScreenHeader } from '@/components/ui/screen';
 import { ThemedText } from '@/components/themed-text';
 import { Radius, Spacing } from '@/constants/theme';
 import { listAllCategories, type CategoryRow } from '@/db/categories';
+import { listCachedAcceptedFriends, type CachedFriend } from '@/db/friends';
 import {
   deleteExpense,
   getExpense,
@@ -22,9 +23,19 @@ import {
 import { rememberMerchant } from '@/db/merchant-memory';
 import { useNotice } from '@/hooks/use-notice';
 import { useTheme } from '@/hooks/use-theme';
+import { syncExpenseAfterEdit } from '@/lib/expense-sync';
+import { loadFriends } from '@/lib/friends';
 import { formatCurrency, formatDateTime } from '@/lib/format';
 import { sanitizeDecimal } from '@/lib/matching';
 import { reconcileSelfEdit, reconcileSplitEdit } from '@/lib/split-edit';
+
+type ParticipantDraft = {
+  name: string;
+  shareAmount: string;
+  locked: boolean;
+  username?: string | null;
+  remoteUserId?: string | null;
+};
 
 export default function ExpenseDetailScreen() {
   const { id, edit } = useLocalSearchParams<{ id: string; edit?: string }>();
@@ -39,15 +50,26 @@ export default function ExpenseDetailScreen() {
   // `locked` marks a share the user hand-edited in this session: it is held
   // fixed while the remaining, still-unlocked participants absorb the
   // difference, so the shares always sum back to the bill.
-  const [editedParticipants, setEditedParticipants] = useState<
-    { name: string; shareAmount: string; locked: boolean }[]
-  >([]);
+  const [editedParticipants, setEditedParticipants] = useState<ParticipantDraft[]>([]);
+  const [friends, setFriends] = useState<CachedFriend[]>(() => listCachedAcceptedFriends());
 
   const [categoryId, setCategoryId] = useState('');
   const [label, setLabel] = useState('');
   const [merchant, setMerchant] = useState('');
   const [total, setTotal] = useState('');
   const [share, setShare] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    loadFriends()
+      .then(() => {
+        if (active) setFriends(listCachedAcceptedFriends());
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const load = useCallback(() => {
     if (!id) return;
@@ -67,6 +89,8 @@ export default function ExpenseDetailScreen() {
           name: person.personName,
           shareAmount: String(person.shareAmount),
           locked: false,
+          username: person.username,
+          remoteUserId: person.remoteUserId,
         }))
       );
     }
@@ -88,8 +112,6 @@ export default function ExpenseDetailScreen() {
       </Screen>
     );
   }
-
-  type ParticipantDraft = { name: string; shareAmount: string; locked: boolean };
 
   // Reconcile a proposed split edit and report back the next rows + self share,
   // or null when the edit must be rejected. Two guards protect the invariant
@@ -130,8 +152,48 @@ export default function ExpenseDetailScreen() {
 
   const editParticipantName = (index: number, value: string) => {
     setEditedParticipants((prev) =>
-      prev.map((person, i) => (i === index ? { ...person, name: value } : person))
+      prev.map((person, i) =>
+        i === index
+          ? { ...person, name: value, username: null, remoteUserId: null }
+          : person
+      )
     );
+  };
+
+  const applyEvenSplit = (rows: ParticipantDraft[]) => {
+    const totalValue = parseFloat(total) || 0;
+    const people = rows.length + 1;
+    if (totalValue <= 0 || people <= 0) {
+      setEditedParticipants(rows);
+      return;
+    }
+    const each = Math.round((totalValue / people) * 100) / 100;
+    const self = Math.round((totalValue - each * rows.length) * 100) / 100;
+    setShare(String(self));
+    setEditedParticipants(
+      rows.map((row) => ({ ...row, shareAmount: String(each), locked: false }))
+    );
+  };
+
+  const toggleFriend = (friend: CachedFriend) => {
+    // Compute from current state and apply side effects outside any state
+    // updater: updaters must be pure (React may invoke them twice), and
+    // applyEvenSplit calls setShare/setEditedParticipants itself.
+    const prev = editedParticipants;
+    const selected = prev.some((row) => row.remoteUserId === friend.userId);
+    const next = selected
+      ? prev.filter((row) => row.remoteUserId !== friend.userId)
+      : [
+          ...prev,
+          {
+            name: friend.displayName,
+            shareAmount: '0',
+            locked: false,
+            username: friend.username,
+            remoteUserId: friend.userId,
+          },
+        ];
+    applyEvenSplit(next);
   };
 
   const editParticipantShare = (index: number, value: string) => {
@@ -201,6 +263,16 @@ export default function ExpenseDetailScreen() {
     const shareValue = parseFloat(share) || 0;
     if (totalValue <= 0 || !categoryId) return;
     const trimmedMerchant = merchant.trim() || null;
+    // Persist edited participant shares alongside the row update.
+    const nextParticipants = editedParticipants
+      .map((person) => ({
+        name: person.name.trim(),
+        shareAmount: parseFloat(person.shareAmount) || 0,
+        username: person.username ?? null,
+        remoteUserId: person.remoteUserId ?? null,
+      }))
+      .filter((person) => person.name.length > 0);
+    const splitPending = nextParticipants.length === 0 && shareValue < totalValue;
     updateExpense(expense.id, {
       categoryId,
       totalAmount: totalValue,
@@ -208,15 +280,10 @@ export default function ExpenseDetailScreen() {
       label: label.trim() || null,
       merchant: trimmedMerchant,
       occurredAt: expense.occurred_at,
+      splitPending,
     });
-    // Persist edited participant shares alongside the row update.
-    const nextParticipants = editedParticipants
-      .map((person) => ({
-        name: person.name.trim(),
-        shareAmount: parseFloat(person.shareAmount) || 0,
-      }))
-      .filter((person) => person.name.length > 0);
-    setExpenseSplit(expense.id, shareValue, nextParticipants);
+    setExpenseSplit(expense.id, shareValue, nextParticipants, splitPending);
+    syncExpenseAfterEdit(expense.id);
     // Re-filing a vendor must retrain its memory too, so the next payment from
     // it opens with this new category instead of the one first learned.
     if (trimmedMerchant) {
@@ -229,17 +296,26 @@ export default function ExpenseDetailScreen() {
   const totalRemaining = participants.reduce((sum, person) => sum + person.remaining, 0);
 
   const remove = () => {
-    Alert.alert('Delete expense?', 'This cannot be undone.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: () => {
-          deleteExpense(expense.id);
-          router.back();
+    const isShared =
+      Boolean(expense.shared_expense_id) ||
+      participants.some((person) => person.remoteUserId != null);
+    Alert.alert(
+      'Delete expense?',
+      isShared
+        ? 'This removes it from your history only. It stays in your friends\u2019 shared records.'
+        : 'This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            deleteExpense(expense.id);
+            router.back();
+          },
         },
-      },
-    ]);
+      ]
+    );
   };
 
   const inputStyle = [
@@ -344,6 +420,51 @@ export default function ExpenseDetailScreen() {
             inputAccessoryViewButtonLabel="Done"
             style={inputStyle}
           />
+
+          <ThemedText type="smallBold">Split with friends</ThemedText>
+          {expense.split_pending ? (
+            <ThemedText type="small" style={{ color: theme.danger }}>
+              This split needs people and shares before it is complete.
+            </ThemedText>
+          ) : null}
+          {friends.length === 0 ? (
+            <ThemedText type="small" themeColor="textSecondary">
+              No linked friends yet. Add a local person below, or add friends from
+              Settings → Friends.
+            </ThemedText>
+          ) : (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.chips}>
+              {friends.map((friend) => (
+                <Chip
+                  key={friend.userId}
+                  label={`@${friend.username}`}
+                  selected={editedParticipants.some(
+                    (row) => row.remoteUserId === friend.userId
+                  )}
+                  onPress={() => toggleFriend(friend)}
+                />
+              ))}
+            </ScrollView>
+          )}
+
+          <View style={styles.participantHeader}>
+            <ThemedText type="small" themeColor="textSecondary">
+              {editedParticipants.length + 1} people including you
+            </ThemedText>
+            <Pressable
+              onPress={() => {
+                const next: ParticipantDraft[] = [
+                  ...editedParticipants,
+                  { name: '', shareAmount: '0', locked: false },
+                ];
+                applyEvenSplit(next);
+              }}>
+              <ThemedText type="linkPrimary">+ Local person</ThemedText>
+            </Pressable>
+          </View>
 
           {editedParticipants.length > 0 && (
             <>
@@ -456,6 +577,12 @@ const styles = StyleSheet.create({
   participantRow: {
     flexDirection: 'row',
     gap: Spacing.two,
+  },
+  participantHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.three,
   },
   participantName: {
     flex: 1,

@@ -91,9 +91,17 @@ class PaymentCaptureHandler(context: Context) {
 
     private fun autoSave(total: Double, payee: String, rawText: String, memory: ExpenseDb.MerchantMemory) {
         val splitCount = memory.splitCount.coerceAtLeast(1)
-        val selfShare = total / splitCount
+        // A remembered split count has no friend mapping, so it is a pending
+        // split until the user assigns people in the app. Book only this user's
+        // share (total / count) so spent totals are not inflated meanwhile; the
+        // pending flag, not the amount, carries the "assign people" state.
+        val splitPending = splitCount > 1
+        val share = if (splitPending) round2(total / splitCount) else total
         val id = db.insertExpense(
-            ExpenseDb.NewExpense(total, selfShare, memory.categoryId, null, payee, sanitize(rawText))
+            ExpenseDb.NewExpense(
+                total, share, memory.categoryId, null, payee, sanitize(rawText),
+                splitPending = splitPending
+            )
         )
         if (id == null) {
             showOverlay(total, payee, rawText)
@@ -140,23 +148,83 @@ class PaymentCaptureHandler(context: Context) {
             context,
             windowManager,
             categories,
+            runCatching { db.topFriends(5) }.getOrElse {
+                Log.e(TAG, "topFriends failed", it)
+                emptyList()
+            },
             amount,
             payee,
             object : PaymentOverlayController.Listener {
-                override fun onSelected(categoryName: String, splitCount: Int, amount: Double) {
+                override fun onSelected(
+                    categoryName: String,
+                    amount: Double,
+                    split: PaymentOverlayController.SplitSelection?
+                ) {
                     overlay = null
                     val category = db.ensureCategory(categoryName)
-                    val selfShare = amount / splitCount
+                    val friends = split?.friends ?: emptyList()
+                    val equalSplit = split?.equalSplit == true && friends.isNotEmpty()
+
+                    val participants: List<ExpenseDb.NewParticipant>
+                    val selfShare: Double
+                    val splitPending: Boolean
+                    if (equalSplit) {
+                        val people = friends.size + 1
+                        val each = round2(amount / people)
+                        selfShare = round2(amount - each * friends.size)
+                        participants = friends.map { friend ->
+                            ExpenseDb.NewParticipant(
+                                friend.userId,
+                                friend.username,
+                                friend.displayName,
+                                each
+                            )
+                        }
+                        splitPending = false
+                    } else if (split != null) {
+                        // Other, or unequal split: no friend mapping yet.
+                        selfShare = amount
+                        participants = emptyList()
+                        splitPending = true
+                    } else {
+                        selfShare = amount
+                        participants = emptyList()
+                        splitPending = false
+                    }
+
                     val id = db.insertExpense(
-                        ExpenseDb.NewExpense(amount, selfShare, category.id, null, payee, sanitize(rawText))
-                    ) ?: return
+                        ExpenseDb.NewExpense(
+                            amount, selfShare, category.id, null, payee, sanitize(rawText),
+                            splitPending = splitPending,
+                            participants = participants
+                        )
+                    )
+                    if (id == null) {
+                        // Never drop a payment silently after the user picked
+                        // a category: show the card again with their input.
+                        Log.e(TAG, "insertExpense failed after selection; reopening overlay")
+                        toast("Couldn't save, try again")
+                        showOverlay(amount, payee, rawText)
+                        return
+                    }
                     db.touchCategory(category.id)
                     // Only learn when auto-filing is on; "always ask" must never
                     // start pre-filling later choices.
                     if (payee != null && PaymentPrefs.mode(appContext) != PaymentPrefs.MODE_ASK) {
-                        db.rememberMerchant(payee, category.id, splitCount)
+                        // "Other"/unequal says nothing about the split size, so
+                        // keep what was learned before instead of resetting it.
+                        val learnedCount: Int? = when {
+                            equalSplit -> friends.size + 1
+                            split != null -> null
+                            else -> 1
+                        }
+                        db.rememberMerchant(payee, category.id, learnedCount)
                     }
-                    showSaved(id, amount, category.name, splitCount, payee, rawText)
+                    showSaved(
+                        id, amount, category.name,
+                        if (equalSplit) friends.size + 1 else 1,
+                        payee, rawText
+                    )
                 }
 
                 override fun onTimedOut() {
@@ -207,6 +275,8 @@ class PaymentCaptureHandler(context: Context) {
     private fun toast(message: String) {
         mainHandler.post { Toast.makeText(appContext, message, Toast.LENGTH_SHORT).show() }
     }
+
+    private fun round2(n: Double): Double = Math.round(n * 100.0) / 100.0
 
     private fun sanitize(text: String): String =
         text.lineSequence()

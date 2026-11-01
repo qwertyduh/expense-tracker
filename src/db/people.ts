@@ -7,6 +7,8 @@ export interface PersonRow {
   id: string;
   display_name: string;
   is_self: number;
+  remote_user_id: string | null;
+  username: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -32,7 +34,108 @@ export function addPerson(displayName: string): PersonRow {
     now
   );
   rememberHandle(name, id, 'name');
-  return { id, display_name: name, is_self: 0, created_at: now, updated_at: now };
+  return {
+    id,
+    display_name: name,
+    is_self: 0,
+    remote_user_id: null,
+    username: null,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+// Find-or-create a person linked to a real account. The remote user id is the
+// stable identity; the username is stored for display and matching.
+export function findOrCreateAccountPerson(input: {
+  remoteUserId: string;
+  username: string;
+  displayName: string;
+}): PersonRow {
+  const byRemote = db.getFirstSync<PersonRow>(
+    'SELECT * FROM people WHERE remote_user_id = ? LIMIT 1',
+    input.remoteUserId
+  );
+  if (byRemote) {
+    db.runSync(
+      `UPDATE people
+          SET display_name = ?, username = ?, updated_at = ?
+        WHERE id = ?`,
+      input.displayName,
+      input.username,
+      new Date().toISOString(),
+      byRemote.id
+    );
+    return { ...byRemote, display_name: input.displayName, username: input.username };
+  }
+
+  const byUsername = db.getFirstSync<PersonRow>(
+    'SELECT * FROM people WHERE lower(username) = lower(?) LIMIT 1',
+    input.username
+  );
+  if (byUsername) {
+    db.runSync(
+      `UPDATE people
+          SET remote_user_id = ?, display_name = ?, username = ?, updated_at = ?
+        WHERE id = ?`,
+      input.remoteUserId,
+      input.displayName,
+      input.username,
+      new Date().toISOString(),
+      byUsername.id
+    );
+    return {
+      ...byUsername,
+      remote_user_id: input.remoteUserId,
+      display_name: input.displayName,
+      username: input.username,
+    };
+  }
+
+  const name = input.displayName.trim() || input.username;
+  const now = new Date().toISOString();
+  const id = randomUUID();
+  db.runSync(
+    `INSERT INTO people
+       (id, display_name, is_self, remote_user_id, username, created_at, updated_at)
+     VALUES (?, ?, 0, ?, ?, ?, ?)`,
+    id,
+    name,
+    input.remoteUserId,
+    input.username,
+    now,
+    now
+  );
+  rememberHandle(name, id, 'name');
+  return {
+    id,
+    display_name: name,
+    is_self: 0,
+    remote_user_id: input.remoteUserId,
+    username: input.username,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+export function linkSelfToProfile(input: {
+  remoteUserId: string;
+  username: string;
+  displayName: string;
+}): void {
+  const self = getSelf();
+  if (!self) return;
+  const now = new Date().toISOString();
+  db.runSync(
+    `UPDATE people
+        SET remote_user_id = ?, username = ?, display_name = ?, updated_at = ?
+      WHERE id = ?`,
+    input.remoteUserId,
+    input.username,
+    input.displayName.trim() || input.username,
+    now,
+    self.id
+  );
 }
 
 export function getPerson(id: string): PersonRow | null {

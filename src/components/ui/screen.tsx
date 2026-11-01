@@ -1,5 +1,11 @@
 import { ReactNode } from 'react';
-import { ScrollView, StyleSheet, View, type ViewProps } from 'react-native';
+import {
+  ScrollView,
+  StyleSheet,
+  View,
+  type ScrollViewProps,
+  type ViewProps,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
@@ -29,12 +35,20 @@ export function ScreenHeader({
   );
 }
 
+type ScreenProps = ViewProps & {
+  scroll?: boolean;
+  contentStyle?: ViewProps['style'];
+  keyboardShouldPersistTaps?: ScrollViewProps['keyboardShouldPersistTaps'];
+  keyboardDismissMode?: ScrollViewProps['keyboardDismissMode'];
+  automaticallyAdjustKeyboardInsets?: ScrollViewProps['automaticallyAdjustKeyboardInsets'];
+};
+
 export function Screen({
   children,
   scroll = true,
   contentStyle,
   ...rest
-}: ViewProps & { scroll?: boolean; contentStyle?: ViewProps['style'] }) {
+}: ScreenProps) {
   const insets = useSafeAreaInsets();
   const padding = {
     paddingTop: insets.top + Spacing.three,
